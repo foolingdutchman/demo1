@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import codecs
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import time
@@ -16,6 +17,8 @@ import sqlite3
 from string import Template
 from urllib.parse import parse_qs, quote, urlsplit
 
+from excel_analysis import ExcelAnalysisError, build_excel_analysis
+
 
 INDEX_TEMPLATE = Template(Path(__file__).with_name("index.html").read_text(encoding="utf-8"))
 POST_TEMPLATE = Template(Path(__file__).with_name("post.html").read_text(encoding="utf-8"))
@@ -26,6 +29,7 @@ PASSWORD_ITERATIONS = 600_000
 SESSION_LIFETIME = 7 * 24 * 60 * 60
 DATABASE_PATH = Path(__file__).with_name("uploads.db")
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json"}
+EXCEL_EXTENSIONS = {".xls", ".xlsx"}
 
 
 def initialize_database():
@@ -93,7 +97,18 @@ def build_text_preview(filename, file_bytes):
 
 
 def build_file_analysis(filename, file_bytes):
-    if Path(filename).suffix.lower() not in TEXT_EXTENSIONS:
+    extension = Path(filename).suffix.lower()
+    if extension in EXCEL_EXTENSIONS:
+        try:
+            return build_excel_analysis(file_bytes)
+        except ExcelAnalysisError as error:
+            logging.warning("Excel analysis failed for %s: %s", filename, error)
+            return (
+                '<section class="analysis"><h2>Excel 分析结果</h2>'
+                f'<p>无法分析该文件：{escape(str(error))}</p></section>'
+            )
+
+    if extension not in TEXT_EXTENSIONS:
         return (
             '<section class="analysis"><h2>文件分析</h2>'
             '<p>当前格式暂不支持内容统计，可下载文件后查看。</p></section>'
