@@ -65,10 +65,7 @@ def initialize_database():
             )
 
 
-def build_text_preview(filename, file_bytes):
-    if Path(filename).suffix.lower() not in TEXT_EXTENSIONS:
-        return '<section class="preview"><p>该文件暂不支持网页预览，可下载到本地查看。</p></section>'
-
+def decode_text_file(file_bytes):
     try:
         if file_bytes.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
             encoding = "utf-32"
@@ -76,13 +73,48 @@ def build_text_preview(filename, file_bytes):
             encoding = "utf-16"
         else:
             encoding = "utf-8-sig"
-        file_content = file_bytes.decode(encoding)
+        return file_bytes.decode(encoding)
     except UnicodeDecodeError:
+        return None
+
+
+def build_text_preview(filename, file_bytes):
+    if Path(filename).suffix.lower() not in TEXT_EXTENSIONS:
+        return '<section class="preview"><p>该文件暂不支持网页预览，可下载到本地查看。</p></section>'
+
+    file_content = decode_text_file(file_bytes)
+    if file_content is None:
         return '<section class="preview"><p>文件已保存，但无法按支持的文本编码预览。</p></section>'
 
     return (
         f'<section class="preview"><h2>文本预览</h2>'
         f'<pre>{escape(file_content)}</pre></section>'
+    )
+
+
+def build_file_analysis(filename, file_bytes):
+    if Path(filename).suffix.lower() not in TEXT_EXTENSIONS:
+        return (
+            '<section class="analysis"><h2>文件分析</h2>'
+            '<p>当前格式暂不支持内容统计，可下载文件后查看。</p></section>'
+        )
+
+    file_content = decode_text_file(file_bytes)
+    if file_content is None:
+        return (
+            '<section class="analysis"><h2>文件分析</h2>'
+            '<p>无法按支持的文本编码读取内容，因此未能完成统计。</p></section>'
+        )
+
+    line_count = len(file_content.splitlines())
+    character_count = len(file_content)
+    word_count = len(file_content.split())
+    return (
+        '<section class="analysis"><h2>文件分析</h2><ul>'
+        f'<li>行数：{line_count:,}</li>'
+        f'<li>字符数：{character_count:,}</li>'
+        f'<li>空白分隔词数：{word_count:,}</li>'
+        '</ul></section>'
     )
 
 
@@ -325,6 +357,11 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                 content_type=escape(content_type),
                 uploaded_at=escape(uploaded_at),
                 text_preview=build_text_preview(filename, file_bytes),
+                analysis=(
+                    build_file_analysis(filename, file_bytes)
+                    if parse_qs(urlsplit(self.path).query).get("analyze") == ["1"]
+                    else ""
+                ),
             )
             self._send_page(page)
             return
