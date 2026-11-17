@@ -2,7 +2,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import codecs
 import hashlib
 import hmac
+import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -18,6 +20,9 @@ from string import Template
 from urllib.parse import parse_qs, quote, urlsplit
 
 from excel_analysis import ExcelAnalysisError, build_excel_analysis
+from i18n import SUPPORTED_LOCALES, get_locale, translate
+from image_analysis import build_image_preview, is_image_file
+from pdf_analysis import PdfAnalysisError, build_pdf_analysis
 
 
 INDEX_TEMPLATE = Template(Path(__file__).with_name("index.html").read_text(encoding="utf-8"))
@@ -30,6 +35,8 @@ SESSION_LIFETIME = 7 * 24 * 60 * 60
 DATABASE_PATH = Path(__file__).with_name("uploads.db")
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json"}
 EXCEL_EXTENSIONS = {".xls", ".xlsx"}
+PDF_EXTENSIONS = {".pdf"}
+SERVER_PORT = int(os.environ.get("PORT", "8000"))
 
 
 def initialize_database():
@@ -82,58 +89,122 @@ def decode_text_file(file_bytes):
         return None
 
 
-def build_text_preview(filename, file_bytes):
-    if Path(filename).suffix.lower() not in TEXT_EXTENSIONS:
-        return '<section class="preview"><p>该文件暂不支持网页预览，可下载到本地查看。</p></section>'
-
-    file_content = decode_text_file(file_bytes)
-    if file_content is None:
-        return '<section class="preview"><p>文件已保存，但无法按支持的文本编码预览。</p></section>'
-
-    return (
-        f'<section class="preview"><h2>文本预览</h2>'
-        f'<pre>{escape(file_content)}</pre></section>'
-    )
-
-
-def build_file_analysis(filename, file_bytes):
-    extension = Path(filename).suffix.lower()
-    if extension in EXCEL_EXTENSIONS:
-        try:
-            return build_excel_analysis(file_bytes)
-        except ExcelAnalysisError as error:
-            logging.warning("Excel analysis failed for %s: %s", filename, error)
-            return (
-                '<section class="analysis"><h2>Excel 分析结果</h2>'
-                f'<p>无法分析该文件：{escape(str(error))}</p></section>'
-            )
-
-    if extension not in TEXT_EXTENSIONS:
+def build_text_preview(filename, file_bytes, upload_id, locale="zh-CN"):
+    if Path(filename).suffix.lower() in PDF_EXTENSIONS:
         return (
-            '<section class="analysis"><h2>文件分析</h2>'
-            '<p>当前格式暂不支持内容统计，可下载文件后查看。</p></section>'
+            f'<section class="preview pdf-preview"><h2>{translate(locale, "preview.pdf")}</h2>'
+            f'<iframe src="/preview/{upload_id}" title="{translate(locale, "preview.pdf")}"></iframe></section>'
+        )
+
+    if is_image_file(filename):
+        return build_image_preview(filename, file_bytes, locale)
+
+    if Path(filename).suffix.lower() not in TEXT_EXTENSIONS:
+        return (
+            '<section class="preview"><p>'
+            f'{translate(locale, "preview.unsupported")}</p></section>'
         )
 
     file_content = decode_text_file(file_bytes)
     if file_content is None:
         return (
-            '<section class="analysis"><h2>文件分析</h2>'
-            '<p>无法按支持的文本编码读取内容，因此未能完成统计。</p></section>'
+            '<section class="preview"><p>'
+            f'{translate(locale, "preview.invalid_encoding")}</p></section>'
+        )
+
+    return (
+        f'<section class="preview"><h2>{translate(locale, "preview.text")}</h2>'
+        f'<pre>{escape(file_content)}</pre></section>'
+    )
+
+
+def build_file_analysis(filename, file_bytes, locale="zh-CN"):
+    extension = Path(filename).suffix.lower()
+    if is_image_file(filename):
+        return (
+            f'<section class="analysis"><h2>{translate(locale, "analysis.image")}</h2>'
+            f'<p>{translate(locale, "analysis.image_pending")}</p></section>'
+        )
+
+    if extension in PDF_EXTENSIONS:
+        try:
+            return build_pdf_analysis(file_bytes, locale)
+        except PdfAnalysisError as error:
+            logging.warning("PDF analysis failed for %s: %s", filename, error)
+            return (
+                f'<section class="analysis"><h2>{translate(locale, "analysis.pdf")}</h2>'
+                f'<p>{escape(translate(locale, "analysis.cannot_analyze", error=str(error)))}</p></section>'
+            )
+
+    if extension in EXCEL_EXTENSIONS:
+        try:
+            return build_excel_analysis(file_bytes, locale)
+        except ExcelAnalysisError as error:
+            logging.warning("Excel analysis failed for %s: %s", filename, error)
+            return (
+                f'<section class="analysis"><h2>{translate(locale, "analysis.excel")}</h2>'
+                f'<p>{escape(translate(locale, "analysis.cannot_analyze", error=str(error)))}</p></section>'
+            )
+
+    if extension not in TEXT_EXTENSIONS:
+        return (
+            f'<section class="analysis"><h2>{translate(locale, "analysis.file")}</h2>'
+            f'<p>{translate(locale, "analysis.unsupported")}</p></section>'
+        )
+
+    file_content = decode_text_file(file_bytes)
+    if file_content is None:
+        return (
+            f'<section class="analysis"><h2>{translate(locale, "analysis.file")}</h2>'
+            f'<p>{translate(locale, "analysis.invalid_encoding")}</p></section>'
         )
 
     line_count = len(file_content.splitlines())
     character_count = len(file_content)
     word_count = len(file_content.split())
     return (
-        '<section class="analysis"><h2>文件分析</h2><ul>'
-        f'<li>行数：{line_count:,}</li>'
-        f'<li>字符数：{character_count:,}</li>'
-        f'<li>空白分隔词数：{word_count:,}</li>'
+        f'<section class="analysis"><h2>{translate(locale, "analysis.file")}</h2><ul>'
+        f'<li>{translate(locale, "analysis.lines", count=f"{line_count:,}")}</li>'
+        f'<li>{translate(locale, "analysis.characters", count=f"{character_count:,}")}</li>'
+        f'<li>{translate(locale, "analysis.words", count=f"{word_count:,}")}</li>'
         '</ul></section>'
     )
 
 
+def build_language_switch(locale, current_path):
+    encoded_path = quote(current_path, safe="")
+    options = []
+    for language in SUPPORTED_LOCALES:
+        label_key = "language.chinese" if language == "zh-CN" else "language.english"
+        label = translate(locale, label_key)
+        href = f"/set-language?lang={language}&amp;next={encoded_path}"
+        options.append(
+            f'<a href="{href}" lang="{language}">{escape(label)}</a>'
+        )
+    return (
+        f'<nav class="language-switch" aria-label="{escape(translate(locale, "language.label"))}">'
+        + " | ".join(options)
+        + "</nav>"
+    )
+
+
 class WebsiteHandler(BaseHTTPRequestHandler):
+    def _locale(self):
+        cookies = SimpleCookie()
+        try:
+            cookies.load(self.headers.get("Cookie", ""))
+        except CookieError:
+            return get_locale(self.headers.get("Accept-Language", ""))
+        language_cookie = cookies.get("language")
+        preferred = language_cookie.value if language_cookie else None
+        return get_locale(self.headers.get("Accept-Language", ""), preferred)
+
+    def _t(self, key, **values):
+        return translate(self._locale(), key, **values)
+
+    def _language_switch(self):
+        return build_language_switch(self._locale(), self.path)
+
     def _send_page(self, page, status_code=200):
         body = page.encode("utf-8") if isinstance(page, str) else page
         self.send_response(status_code)
@@ -195,14 +266,6 @@ class WebsiteHandler(BaseHTTPRequestHandler):
         except UnicodeEncodeError:
             return None
 
-    def _send_auth_page(self, next_path="/", message="", status_code=200, mode="login"):
-        page = AUTH_TEMPLATE.substitute(
-            next_path=escape(next_path, quote=True),
-            message=escape(message),
-            mode=mode,
-        )
-        self._send_page(page, status_code)
-
     def _create_session(self, user_id, next_path):
         token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
@@ -220,13 +283,13 @@ class WebsiteHandler(BaseHTTPRequestHandler):
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
-            self.send_error_page(400, "无效的请求长度")
+            self.send_error_page(400, self._t("request.invalid_length"))
             return None
         if content_length <= 0 or content_length > MAX_FORM_BYTES:
-            self.send_error_page(400, "表单内容为空或超出大小限制")
+            self.send_error_page(400, self._t("request.invalid_form_size"))
             return None
         if not self.headers.get("Content-Type", "").lower().startswith("application/x-www-form-urlencoded"):
-            self.send_error_page(400, "请求格式错误")
+            self.send_error_page(400, self._t("request.invalid_form_type"))
             return None
         try:
             body = self.rfile.read(content_length).decode("utf-8")
@@ -235,7 +298,7 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                 for key, values in parse_qs(body, keep_blank_values=True, max_num_fields=8).items()
             }
         except (UnicodeDecodeError, ValueError):
-            self.send_error_page(400, "表单内容无效")
+            self.send_error_page(400, self._t("request.invalid_form_content"))
             return None
 
     def _handle_auth(self):
@@ -246,17 +309,17 @@ class WebsiteHandler(BaseHTTPRequestHandler):
         next_path = self._safe_next_path("?next=" + fields.get("next", "/"))
         mode = fields.get("mode", "login")
         if mode not in {"login", "register"}:
-            self._send_auth_page(next_path, "无效的操作模式。", 400)
+            self._send_auth_page(next_path, self._t("request.invalid_mode"), 400)
             return
 
         username = fields.get("username", "").strip()
         password = fields.get("password", "")
         confirm_password = fields.get("confirm_password", "")
         if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
-            self._send_auth_page(next_path, "用户名须为 3 至 32 位字母、数字、下划线、点或连字符。", 400, mode)
+            self._send_auth_page(next_path, self._t("auth.invalid_username"), 400, mode)
             return
         if not 8 <= len(password) <= 128:
-            self._send_auth_page(next_path, "密码长度须为 8 至 128 位。", 400, mode)
+            self._send_auth_page(next_path, self._t("auth.invalid_password_length"), 400, mode)
             return
 
         with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
@@ -266,13 +329,13 @@ class WebsiteHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if mode == "register":
                 if user is not None:
-                    self._send_auth_page(next_path, "该用户名已注册，请切换到登录。", 409, mode)
+                    self._send_auth_page(next_path, self._t("auth.username_exists"), 409, mode)
                     return
                 if password != confirm_password:
-                    self._send_auth_page(next_path, "两次输入的密码不一致。", 400, mode)
+                    self._send_auth_page(next_path, self._t("auth.password_mismatch"), 400, mode)
                     return
                 if not all(re.search(pattern, password) for pattern in (r"[A-Z]", r"[a-z]", r"[0-9]")):
-                    self._send_auth_page(next_path, "新密码须同时包含大写字母、小写字母和数字。", 400, mode)
+                    self._send_auth_page(next_path, self._t("auth.password_strength"), 400, mode)
                     return
                 salt = secrets.token_bytes(16)
                 password_hash = hashlib.pbkdf2_hmac(
@@ -285,13 +348,13 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                 user_id = cursor.lastrowid
             else:
                 if user is None:
-                    self._send_auth_page(next_path, "该用户名尚未注册，请切换到注册。", 404, mode)
+                    self._send_auth_page(next_path, self._t("auth.username_missing"), 404, mode)
                     return
                 supplied_hash = hashlib.pbkdf2_hmac(
                     "sha256", password.encode("utf-8"), user[2], PASSWORD_ITERATIONS
                 )
                 if not hmac.compare_digest(supplied_hash, user[3]):
-                    self._send_auth_page(next_path, "用户名或密码不正确。", 401, mode)
+                    self._send_auth_page(next_path, self._t("auth.invalid_credentials"), 401, mode)
                     return
                 user_id = user[0]
 
@@ -315,19 +378,71 @@ class WebsiteHandler(BaseHTTPRequestHandler):
         )
 
     def send_error_page(self, status_code, message):
+        locale = self._locale()
         page = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head><meta charset="UTF-8"><title>请求失败</title></head>
+<html lang="{locale}">
+<head><meta charset="UTF-8"><title>{escape(translate(locale, "error.title"))}</title></head>
 <body>
-    <h1>请求失败</h1>
+    <style>
+        .language-switch {{ position: absolute; top: 16px; right: 24px; font-size: 14px; }}
+        .language-switch a {{ color: #087f70; text-decoration: none; }}
+        .language-switch a:hover {{ text-decoration: underline; }}
+    </style>
+    {build_language_switch(locale, "/")}
+    <h1>{escape(translate(locale, "error.title"))}</h1>
     <p>{escape(message)}</p>
-    <p><a href="/">返回首页</a></p>
+    <p><a href="/">{escape(translate(locale, "error.home"))}</a></p>
 </body>
 </html>""".encode("utf-8")
         self._send_page(page, status_code)
 
+    def _send_auth_page(self, next_path="/", message="", status_code=200, mode="login"):
+        locale = self._locale()
+        keys = (
+            "auth.register", "auth.login", "auth.register_intro", "auth.login_intro",
+            "auth.register_submit", "auth.register_password_placeholder",
+            "auth.password_placeholder",
+        )
+        auth_messages = {
+            key.rsplit(".", 1)[-1]: translate(locale, key) for key in keys
+        }
+        page = AUTH_TEMPLATE.substitute(
+            language=locale,
+            title=escape(translate(locale, "auth.title")),
+            language_switch=self._language_switch(),
+            eyebrow=escape(translate(locale, "auth.eyebrow")),
+            login=escape(translate(locale, "auth.login")),
+            login_intro=escape(translate(locale, "auth.login_intro")),
+            register=escape(translate(locale, "auth.register")),
+            mode_label=escape(translate(locale, "auth.mode_label")),
+            username_label=escape(translate(locale, "auth.username")),
+            username_placeholder=escape(translate(locale, "auth.username_placeholder"), quote=True),
+            password_label=escape(translate(locale, "auth.password")),
+            password_placeholder=escape(translate(locale, "auth.password_placeholder"), quote=True),
+            confirm_password_label=escape(translate(locale, "auth.confirm_password")),
+            confirm_placeholder=escape(translate(locale, "auth.confirm_placeholder"), quote=True),
+            password_hint=escape(translate(locale, "auth.password_hint")),
+            auth_messages=json.dumps(auth_messages, ensure_ascii=False),
+            message=escape(message),
+            next_path=escape(next_path, quote=True),
+            mode=escape(mode, quote=True),
+        )
+        self._send_page(page, status_code)
+
     def do_GET(self):
         request_path = urlsplit(self.path).path
+        if request_path == "/set-language":
+            language = parse_qs(urlsplit(self.path).query).get("lang", [""])[0]
+            if language not in SUPPORTED_LOCALES:
+                self.send_error_page(400, self._t("language.invalid"))
+                return
+            next_path = self._safe_next_path(self.path)
+            self._redirect(
+                next_path,
+                f"language={language}; SameSite=Lax; Path=/; Max-Age=31536000",
+            )
+            return
+
         if request_path == "/login":
             user = self._current_user()
             next_path = self._safe_next_path(self.path)
@@ -342,11 +457,12 @@ class WebsiteHandler(BaseHTTPRequestHandler):
             self._redirect("/login?next=" + quote(self.path, safe=""))
             return
         user_id, username = user
+        locale = self._locale()
 
         if request_path.startswith("/post/"):
             upload_id_text = request_path.removeprefix("/post/")
             if not upload_id_text.isdigit():
-                self.send_error_page(404, "文件不存在")
+                self.send_error_page(404, self._t("request.file_not_found"))
                 return
 
             try:
@@ -357,34 +473,90 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                         (int(upload_id_text), user_id),
                     ).fetchone()
             except sqlite3.Error:
-                self.send_error_page(500, "读取数据库失败")
+                self.send_error_page(500, self._t("request.database_read_error"))
                 return
 
             if upload is None:
-                self.send_error_page(404, "文件不存在")
+                self.send_error_page(404, self._t("request.file_not_found"))
                 return
 
             filename, content_type, size_bytes, uploaded_at, file_bytes = upload
             page = POST_TEMPLATE.substitute(
+                language=locale,
+                title=escape(translate(locale, "detail.title")),
+                language_switch=self._language_switch(),
+                intro=escape(translate(locale, "detail.intro")),
+                file_info=escape(translate(locale, "detail.file_info")),
                 filename=escape(filename),
                 file_size=f"{size_bytes:,}",
+                bytes_label=escape(translate(locale, "site.bytes")),
                 upload_id=int(upload_id_text),
                 content_type=escape(content_type),
                 uploaded_at=escape(uploaded_at),
-                text_preview=build_text_preview(filename, file_bytes),
+                filename_label=escape(translate(locale, "site.filename")),
+                size_label=escape(translate(locale, "site.size")),
+                record_id_label=escape(translate(locale, "detail.record_id")),
+                file_type_label=escape(translate(locale, "detail.file_type")),
+                uploaded_at_label=escape(translate(locale, "site.uploaded_at")),
+                text_preview=build_text_preview(
+                    filename, file_bytes, int(upload_id_text), locale
+                ),
                 analysis=(
-                    build_file_analysis(filename, file_bytes)
+                    build_file_analysis(filename, file_bytes, locale)
                     if parse_qs(urlsplit(self.path).query).get("analyze") == ["1"]
                     else ""
                 ),
+                download=escape(translate(locale, "detail.download")),
+                analyze=escape(translate(locale, "detail.analyze")),
+                confirm_delete=escape(
+                    json.dumps(translate(locale, "site.confirm_delete"), ensure_ascii=False),
+                    quote=True,
+                ),
+                delete=escape(translate(locale, "detail.delete")),
+                continue_upload=escape(translate(locale, "detail.continue_upload")),
             )
             self._send_page(page)
+            return
+
+        if request_path.startswith("/preview/"):
+            upload_id_text = request_path.removeprefix("/preview/")
+            if not upload_id_text.isdigit():
+                self.send_error_page(404, self._t("request.file_not_found"))
+                return
+
+            try:
+                with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+                    upload = connection.execute(
+                        """SELECT filename, content FROM uploads
+                           WHERE id = ? AND user_id = ?""",
+                        (int(upload_id_text), user_id),
+                    ).fetchone()
+            except sqlite3.Error:
+                self.send_error_page(500, self._t("request.database_read_error"))
+                return
+
+            if upload is None or Path(upload[0]).suffix.lower() not in PDF_EXTENSIONS:
+                self.send_error_page(404, self._t("request.file_not_found"))
+                return
+
+            filename, file_bytes = upload
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header(
+                "Content-Disposition",
+                f"inline; filename*=UTF-8''{quote(filename, safe='')}",
+            )
+            self.send_header("Content-Length", str(len(file_bytes)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(file_bytes)
             return
 
         if request_path.startswith("/download/"):
             upload_id_text = request_path.removeprefix("/download/")
             if not upload_id_text.isdigit():
-                self.send_error_page(404, "文件不存在")
+                self.send_error_page(404, self._t("request.file_not_found"))
                 return
 
             try:
@@ -394,11 +566,11 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                         (int(upload_id_text), user_id),
                     ).fetchone()
             except sqlite3.Error:
-                self.send_error_page(500, "读取数据库失败")
+                self.send_error_page(500, self._t("request.database_read_error"))
                 return
 
             if upload is None:
-                self.send_error_page(404, "文件不存在")
+                self.send_error_page(404, self._t("request.file_not_found"))
                 return
 
             filename, content_type, file_bytes = upload
@@ -415,7 +587,7 @@ class WebsiteHandler(BaseHTTPRequestHandler):
             return
 
         if request_path != "/":
-            self.send_error_page(404, "页面不存在")
+            self.send_error_page(404, self._t("request.page_not_found"))
             return
         with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
             uploads = connection.execute(
@@ -426,22 +598,36 @@ class WebsiteHandler(BaseHTTPRequestHandler):
         if uploads:
             upload_records = "".join(
                 f'<tr><td><a href="/post/{upload_id}">{escape(filename)}</a></td>'
-                f'<td>{size_bytes:,} 字节</td><td>{escape(uploaded_at)}</td>'
+                f'<td>{size_bytes:,} {escape(translate(locale, "site.bytes"))}</td>'
+                f'<td>{escape(uploaded_at)}</td>'
                 f'<td><form class="delete-form" method="post" action="/delete/{upload_id}" '
-                f'onsubmit="return confirm(\'确定删除这个文件吗？\')">'
-                '<button class="delete-button" type="submit">删除</button></form></td></tr>'
+                f'onsubmit="return confirm({escape(json.dumps(translate(locale, "site.confirm_delete"), ensure_ascii=False), quote=True)})">'
+                f'<button class="delete-button" type="submit">{escape(translate(locale, "site.delete"))}</button></form></td></tr>'
                 for upload_id, filename, size_bytes, uploaded_at in uploads
             )
             upload_records = (
                 "<div class=\"table-wrap\"><table><thead><tr>"
-                "<th>文件名</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead>"
+                f"<th>{escape(translate(locale, 'site.filename'))}</th>"
+                f"<th>{escape(translate(locale, 'site.size'))}</th>"
+                f"<th>{escape(translate(locale, 'site.uploaded_at'))}</th>"
+                f"<th>{escape(translate(locale, 'site.actions'))}</th></tr></thead>"
                 f"<tbody>{upload_records}</tbody></table></div>"
             )
         else:
-            upload_records = '<p class="empty">还没有上传文件。</p>'
+            upload_records = f'<p class="empty">{escape(translate(locale, "site.empty_uploads"))}</p>'
         page = INDEX_TEMPLATE.substitute(
-            username=escape(username),
+            language=locale,
+            site_title=escape(translate(locale, "site.title")),
+            logged_in=escape(translate(locale, "site.logged_in", username=username)),
+            logout=escape(translate(locale, "site.logout")),
+            language_switch=self._language_switch(),
+            greeting=escape(translate(locale, "site.greeting")),
+            welcome=escape(translate(locale, "site.welcome")),
+            wish=escape(translate(locale, "site.wish")),
+            upload=escape(translate(locale, "site.upload")),
+            my_uploads=escape(translate(locale, "site.my_uploads")),
             upload_records=upload_records,
+            footer=escape(translate(locale, "site.footer")),
         )
         self._send_page(page)
 
@@ -460,7 +646,7 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                 return
             upload_id_text = request_path.removeprefix("/delete/")
             if not upload_id_text.isdigit():
-                self.send_error_page(404, "文件不存在")
+                self.send_error_page(404, self._t("request.file_not_found"))
                 return
             try:
                 with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
@@ -469,15 +655,15 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                         (int(upload_id_text), user[0]),
                     )
             except sqlite3.Error:
-                self.send_error_page(500, "删除文件失败")
+                self.send_error_page(500, self._t("request.delete_failed"))
                 return
             if result.rowcount == 0:
-                self.send_error_page(404, "文件不存在")
+                self.send_error_page(404, self._t("request.file_not_found"))
                 return
             self._redirect("/")
             return
         if request_path != "/button-click":
-            self.send_error(404)
+            self.send_error_page(404, self._t("request.page_not_found"))
             return
         user = self._current_user()
         if user is None:
@@ -488,24 +674,24 @@ class WebsiteHandler(BaseHTTPRequestHandler):
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
-            self.send_error_page(400, "无效的请求长度")
+            self.send_error_page(400, self._t("request.invalid_length"))
             return
 
         if content_length <= 0:
-            self.send_error_page(400, "请选择要上传的文件")
+            self.send_error_page(400, self._t("upload.select_file"))
             return
         if content_length > MAX_UPLOAD_BYTES:
-            self.send_error_page(413, "文件不能超过 10 MiB")
+            self.send_error_page(413, self._t("upload.too_large"))
             return
 
         content_type = self.headers.get("Content-Type", "")
         if not content_type.lower().startswith("multipart/form-data"):
-            self.send_error_page(400, "请求格式必须是 multipart/form-data")
+            self.send_error_page(400, self._t("upload.invalid_type"))
             return
 
         request_body = self.rfile.read(content_length)
         if len(request_body) != content_length:
-            self.send_error_page(400, "上传数据不完整")
+            self.send_error_page(400, self._t("upload.incomplete"))
             return
 
         message = BytesParser(policy=policy.default).parsebytes(
@@ -522,7 +708,7 @@ class WebsiteHandler(BaseHTTPRequestHandler):
             None,
         )
         if uploaded_file is None or not uploaded_file.get_filename():
-            self.send_error_page(400, "请选择要上传的文件")
+            self.send_error_page(400, self._t("upload.select_file"))
             return
 
         original_filename = Path(uploaded_file.get_filename()).name
@@ -543,7 +729,7 @@ class WebsiteHandler(BaseHTTPRequestHandler):
                 )
                 upload_id = cursor.lastrowid
         except sqlite3.Error:
-            self.send_error_page(500, "文件已接收，但保存到数据库失败")
+            self.send_error_page(500, self._t("upload.database_failed"))
             return
 
         self._redirect(f"/post/{upload_id}")
@@ -551,11 +737,12 @@ class WebsiteHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     initialize_database()
-    address = ("127.0.0.1", 8000)
+    address = ("127.0.0.1", SERVER_PORT)
     server = HTTPServer(address, WebsiteHandler)
-    print("网站已启动： http://127.0.0.1:8000")
+    console_locale = get_locale(os.environ.get("LANG", ""))
+    print(translate(console_locale, "server.started", url=f"http://{address[0]}:{address[1]}"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n网站已停止。")
+        print("\n" + translate(console_locale, "server.stopped"))
         server.server_close()

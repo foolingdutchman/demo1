@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${language}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>登录或注册</title>
+    <title>${title}</title>
     <style>
         * { box-sizing: border-box; }
         body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
@@ -22,35 +22,40 @@
         button { min-height: 44px; width: 100%; padding: 0 18px; color: #fff; background: #087f70; border: 0; border-radius: 6px; font: inherit; font-weight: 700; cursor: pointer; }
         button:hover { background: #06695d; }
         .hint { margin: 12px 0 0; color: #68758a; font-size: 13px; line-height: 1.6; }
+        .language-switch { position: absolute; top: 16px; right: 24px; font-size: 14px; }
+        .language-switch a { color: #087f70; text-decoration: none; }
+        .language-switch a:hover { text-decoration: underline; }
         @media (max-width: 640px) { main { padding: 24px; } }
     </style>
 </head>
 <body>
+    ${language_switch}
     <main>
-        <p class="eyebrow">ACCOUNT ACCESS</p>
-        <h1 id="page-title">登录</h1>
-        <p class="intro" id="page-intro">使用已有账号登录。</p>
+        <p class="eyebrow">${eyebrow}</p>
+        <h1 id="page-title">${login}</h1>
+        <p class="intro" id="page-intro">${login_intro}</p>
         <p class="notice" role="alert">${message}</p>
-        <div class="mode-switch" role="group" aria-label="登录或注册">
-            <button id="login-mode" type="button" aria-pressed="true">登录</button>
-            <button id="register-mode" type="button" aria-pressed="false">注册</button>
+        <div class="mode-switch" role="group" aria-label="${mode_label}">
+            <button id="login-mode" type="button" aria-pressed="true">${login}</button>
+            <button id="register-mode" type="button" aria-pressed="false">${register}</button>
         </div>
         <form method="post" action="/auth" id="auth-form" data-mode="${mode}">
             <input type="hidden" name="next" value="${next_path}">
             <input type="hidden" name="mode" id="auth-mode" value="${mode}">
-            <label for="username">用户名</label>
-            <input id="username" name="username" autocomplete="username" minlength="3" maxlength="32" placeholder="3 至 32 位字母、数字、点或连字符" required>
-            <label for="password">密码</label>
-            <input id="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" placeholder="输入账号密码" required>
+            <label for="username">${username_label}</label>
+            <input id="username" name="username" autocomplete="username" minlength="3" maxlength="32" placeholder="${username_placeholder}" required>
+            <label for="password">${password_label}</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" placeholder="${password_placeholder}" required>
             <div id="confirmation-field" hidden>
-                <label for="confirm-password">确认密码</label>
-                <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="再次输入密码">
-                <p class="hint">密码至少 8 位，并包含大写字母、小写字母和数字。</p>
+                <label for="confirm-password">${confirm_password_label}</label>
+                <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="${confirm_placeholder}">
+                <p class="hint">${password_hint}</p>
             </div>
-            <button type="submit" id="submit-button">登录</button>
+            <button type="submit" id="submit-button">${login}</button>
         </form>
     </main>
     <script>
+        const messages = ${auth_messages};
         const form = document.getElementById("auth-form");
         const confirmationField = document.getElementById("confirmation-field");
         const confirmationInput = document.getElementById("confirm-password");
@@ -60,19 +65,19 @@
             const registering = mode === "register";
             form.dataset.mode = mode;
             document.getElementById("auth-mode").value = mode;
-            document.getElementById("page-title").textContent = registering ? "注册" : "登录";
+            document.getElementById("page-title").textContent = registering ? messages.register : messages.login;
             document.getElementById("page-intro").textContent = registering
-                ? "创建账号后即可上传和管理文件。"
-                : "使用已有账号登录。";
-            document.getElementById("submit-button").textContent = registering ? "注册并登录" : "登录";
+                ? messages.register_intro
+                : messages.login_intro;
+            document.getElementById("submit-button").textContent = registering ? messages.register_submit : messages.login;
             document.getElementById("login-mode").setAttribute("aria-pressed", String(!registering));
             document.getElementById("register-mode").setAttribute("aria-pressed", String(registering));
             confirmationField.hidden = !registering;
             confirmationInput.required = registering;
             passwordInput.autocomplete = registering ? "new-password" : "current-password";
             passwordInput.placeholder = registering
-                ? "至少 8 位，含大写、小写字母和数字"
-                : "输入账号密码";
+                ? messages.register_password_placeholder
+                : messages.password_placeholder;
         }
 
         document.getElementById("login-mode").addEventListener("click", () => setMode("login"));

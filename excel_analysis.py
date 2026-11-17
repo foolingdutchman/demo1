@@ -6,17 +6,19 @@ import pandas as pd
 from openpyxl.utils.exceptions import InvalidFileException
 from xlrd.biffh import XLRDError
 
+from i18n import translate
+
 
 class ExcelAnalysisError(Exception):
     pass
 
 
-def summarize_sheet(data):
+def summarize_sheet(data, locale="zh-CN"):
     missing_summary = pd.DataFrame(
         {
-            "数据类型": data.dtypes.astype(str),
-            "缺失值数量": data.isna().sum(),
-            "缺失值比例(%)": (data.isna().mean() * 100).round(2),
+            translate(locale, "excel.data_type"): data.dtypes.astype(str),
+            translate(locale, "excel.missing_count"): data.isna().sum(),
+            translate(locale, "excel.missing_percent"): (data.isna().mean() * 100).round(2),
         }
     )
     numeric_data = data.select_dtypes(include="number")
@@ -38,37 +40,44 @@ def _render_table(data, index=False):
     )
 
 
-def build_excel_analysis(file_bytes):
+def build_excel_analysis(file_bytes, locale="zh-CN"):
     try:
         sections = []
         with pd.ExcelFile(BytesIO(file_bytes)) as workbook:
             if not workbook.sheet_names:
-                raise ValueError("工作簿中没有工作表")
+                raise ValueError(translate(locale, "excel.no_sheets"))
 
             for sheet_name in workbook.sheet_names:
                 data = pd.read_excel(workbook, sheet_name=sheet_name)
-                missing_summary, numeric_data, numeric_summary = summarize_sheet(data)
+                missing_summary, _, numeric_summary = summarize_sheet(data, locale)
+                if numeric_summary is not None:
+                    numeric_summary.columns = [
+                        translate(locale, f"excel.stat.{column}")
+                        for column in numeric_summary.columns
+                    ]
                 sections.append(
                     f'<section class="analysis-sheet"><h3>{escape(sheet_name)}</h3>'
-                    f'<p>行数：{len(data):,}，列数：{len(data.columns):,}</p>'
-                    '<h4>数据预览（前 20 行）</h4>'
+                    f'<p>{translate(locale, "excel.rows_columns", rows=f"{len(data):,}", columns=f"{len(data.columns):,}")}</p>'
+                    f'<h4>{translate(locale, "excel.preview")}</h4>'
                     f'{_render_table(data.head(20))}'
-                    '<h4>列类型与缺失值</h4>'
+                    f'<h4>{translate(locale, "excel.columns_missing")}</h4>'
                     f'{_render_table(missing_summary, index=True)}'
                 )
                 if numeric_summary is not None:
                     sections.extend(
                         (
-                            "<h4>数值列统计</h4>",
+                            f"<h4>{translate(locale, 'excel.numeric_summary')}</h4>",
                             _render_table(numeric_summary, index=True),
                         )
                     )
                 else:
-                    sections.append("<p>该工作表没有可分析的数值列。</p>")
+                    sections.append(
+                        f"<p>{translate(locale, 'excel.no_numeric')}</p>"
+                    )
                 sections.append("</section>")
 
         return (
-            '<section class="analysis"><h2>Excel 分析结果</h2>'
+            f'<section class="analysis"><h2>{translate(locale, "analysis.excel")}</h2>'
             + "".join(sections)
             + "</section>"
         )
@@ -86,16 +95,27 @@ def build_excel_analysis(file_bytes):
 def run_streamlit_app():
     import streamlit as st
 
-    st.title("Excel 文件分析")
-    uploaded_file = st.file_uploader("上传 Excel 文件", type=["xlsx", "xls"])
+    locale = st.session_state.get("excel_language", "zh-CN")
+    locale = st.selectbox(
+        translate(locale, "language.label"),
+        ("zh-CN", "en"),
+        format_func=lambda value: translate(
+            value, "language.chinese" if value == "zh-CN" else "language.english"
+        ),
+        key="excel_language",
+    )
+    st.title(translate(locale, "excel.title"))
+    uploaded_file = st.file_uploader(
+        translate(locale, "excel.upload"), type=["xlsx", "xls"]
+    )
     if uploaded_file is None:
         return
 
     try:
         with pd.ExcelFile(BytesIO(uploaded_file.getvalue())) as workbook:
             if not workbook.sheet_names:
-                raise ValueError("工作簿中没有工作表")
-            sheet_name = st.selectbox("选择工作表", workbook.sheet_names)
+                raise ValueError(translate(locale, "excel.no_sheets"))
+            sheet_name = st.selectbox(translate(locale, "excel.sheet"), workbook.sheet_names)
             data = pd.read_excel(workbook, sheet_name=sheet_name)
     except (
         ImportError,
@@ -105,27 +125,29 @@ def run_streamlit_app():
         XLRDError,
         zipfile.BadZipFile,
     ) as error:
-        st.error(f"无法读取或分析此 Excel 文件：{error}")
+        st.error(translate(locale, "excel.read_error", error=error))
         return
 
-    st.subheader("数据预览")
+    st.subheader(translate(locale, "excel.preview"))
     st.dataframe(data.head(20), use_container_width=True)
 
-    st.subheader("基本信息")
+    st.subheader(translate(locale, "excel.basic_info"))
     col1, col2 = st.columns(2)
-    col1.metric("行数", len(data))
-    col2.metric("列数", len(data.columns))
-    missing_summary, numeric_data, numeric_summary = summarize_sheet(data)
-    st.write("各列数据类型与缺失值")
+    col1.metric(translate(locale, "excel.rows"), len(data))
+    col2.metric(translate(locale, "excel.columns"), len(data.columns))
+    missing_summary, numeric_data, numeric_summary = summarize_sheet(data, locale)
+    st.write(translate(locale, "excel.column_details"))
     st.dataframe(missing_summary, use_container_width=True)
 
     if numeric_summary is not None:
-        st.subheader("数值列统计")
+        st.subheader(translate(locale, "excel.numeric_summary"))
         st.dataframe(numeric_summary, use_container_width=True)
-        column = st.selectbox("选择数值列查看分布", numeric_data.columns)
+        column = st.selectbox(
+            translate(locale, "excel.select_column"), numeric_data.columns
+        )
         st.bar_chart(numeric_data[column].dropna().value_counts().sort_index())
     else:
-        st.info("该工作表没有可分析的数值列。")
+        st.info(translate(locale, "excel.no_numeric"))
 
 
 if __name__ == "__main__":
