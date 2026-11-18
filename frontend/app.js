@@ -4,8 +4,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 		const page = document.body.dataset.page;
 		if (page === "login") {
 			await initLoginPage();
-		} else if (page === "home") {
-			await initHomePage();
+		} else if (page === "assets") {
+			await initAssetsPage();
 		} else if (page === "detail") {
 			await initDetailPage();
 		}
@@ -75,10 +75,10 @@ async function initLoginPage() {
 					confirm_password: confirmation.value,
 				}),
 			});
-			const next = query.get("next") || "index.html";
-			const safeNext = /^(index\.html|detail\.html\?id=\d+)$/.test(next)
+			const next = query.get("next") || "assets.html";
+			const safeNext = /^(assets\.html|detail\.html\?id=\d+)$/.test(next)
 				? next
-				: "index.html";
+				: "assets.html";
 			window.location.href = safeNext;
 		} catch (error) {
 			App.setNotice(error.message);
@@ -87,7 +87,7 @@ async function initLoginPage() {
 	setMode(mode);
 }
 
-async function initHomePage() {
+async function initAssetsPage() {
 	let session;
 	try {
 		session = await App.api("/api/session");
@@ -96,7 +96,7 @@ async function initHomePage() {
 		return;
 	}
 	if (!session.authenticated) {
-		goToLogin("index.html");
+		goToLogin("assets.html");
 		return;
 	}
 	document.getElementById("username").textContent = App.t("site.logged_in", {
@@ -106,7 +106,7 @@ async function initHomePage() {
 	document.getElementById("logout-button").addEventListener("click", async () => {
 		try {
 			await App.api("/api/logout", { method: "POST" });
-			goToLogin("index.html");
+			window.location.href = "index.html";
 		} catch (error) {
 			App.setNotice(error.message);
 		}
@@ -123,7 +123,7 @@ async function initHomePage() {
 			const result = await App.api("/api/uploads", { method: "POST", body: formData });
 			window.location.href = `detail.html?id=${result.upload.id}`;
 		} catch (error) {
-			handleUnauthorized(error, "index.html");
+			handleUnauthorized(error, "assets.html");
 		}
 	});
 	await loadUploadList();
@@ -184,7 +184,7 @@ async function loadUploadList() {
 					await App.api(`/api/uploads/${upload.id}`, { method: "DELETE" });
 					await loadUploadList();
 				} catch (error) {
-					handleUnauthorized(error, "index.html");
+					handleUnauthorized(error, "assets.html");
 				}
 			});
 			actionCell.append(deleteButton);
@@ -195,7 +195,7 @@ async function loadUploadList() {
 		wrapper.append(table);
 		container.append(wrapper);
 	} catch (error) {
-		handleUnauthorized(error, "index.html");
+		handleUnauthorized(error, "assets.html");
 	}
 }
 
@@ -243,7 +243,7 @@ async function initDetailPage() {
 		if (!window.confirm(App.t("site.confirm_delete"))) return;
 		try {
 			await App.api(`/api/uploads/${id}`, { method: "DELETE" });
-			window.location.href = "index.html";
+			window.location.href = "assets.html";
 		} catch (error) {
 			handleUnauthorized(error, `detail.html?id=${id}`);
 		}

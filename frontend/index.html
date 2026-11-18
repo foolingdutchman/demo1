@@ -6,61 +6,77 @@
 	<title>我的小网站</title>
 	<style>
 		* { box-sizing: border-box; }
-		body { margin: 0; min-height: 100vh; font-family: "Microsoft YaHei", sans-serif; color: #233047; background: linear-gradient(135deg, #e8f4ff, #f8f2ff); }
-		header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 8%; background: #fff; box-shadow: 0 2px 12px #24344a12; }
-		header strong { color: #536dfe; font-size: 20px; }
-		.account { display: flex; align-items: center; gap: 14px; color: #68758a; font-size: 14px; }
-		.language-switch { display: flex; gap: 8px; }
-		button { min-height: 40px; padding: 8px 14px; color: #fff; background: #536dfe; border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
-		button:hover { background: #4058e8; }
-		.language-switch button { min-height: 34px; padding: 5px 10px; color: #087f70; background: #f1f5f4; border: 1px solid #dfe8e5; }
-		main { max-width: 760px; margin: 8vh auto; padding: 24px; text-align: center; }
-		.card, .records { background: #fff; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; }
-		.card { padding: 48px 28px; }
-		.records { margin-top: 20px; padding: 24px; text-align: left; }
-		h1 { margin: 0 0 14px; font-size: clamp(32px, 7vw, 52px); }
-		p { color: #68758a; line-height: 1.8; }
-		.upload-form { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; margin-top: 22px; }
-		.records h2 { margin: 0 0 16px; font-size: 20px; }
-		.table-wrap { overflow-x: auto; }
-		table { width: 100%; border-collapse: collapse; text-align: left; }
-		th, td { padding: 12px 10px; border-bottom: 1px solid #e7eceb; font-size: 14px; }
-		th { color: #68758a; font-size: 13px; }
-		td:first-child { overflow-wrap: anywhere; }
-		td a { color: #087f70; font-weight: 600; }
-		.delete-button { color: #a33b31; background: #fff0ed; border: 1px solid #f1c8c2; }
-		.empty { color: #68758a; }
-		.notice { margin: 14px 0; color: #9c2f25; }
-		.notice:empty { display: none; }
-		footer { margin-top: 28px; color: #8792a4; font-size: 14px; }
-		@media (max-width: 640px) { header { align-items: flex-start; flex-direction: column; } main { margin: 4vh auto; } }
+		body { margin: 0; min-height: 100vh; color: #233047; background: linear-gradient(135deg, #e8f4ff, #f8f2ff); font-family: "Microsoft YaHei", sans-serif; }
+		header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 18px 8%; background: #fff; box-shadow: 0 2px 12px #24344a12; }
+		.brand { color: #536dfe; font-size: 20px; font-weight: 700; text-decoration: none; }
+		.header-actions { display: flex; align-items: center; gap: 12px; }
+		.language-switch { display: flex; gap: 8px; margin-right: 8px; }
+		button { min-height: 38px; padding: 7px 14px; color: #087f70; background: #f1f5f4; border: 1px solid #dfe8e5; border-radius: 7px; font: inherit; cursor: pointer; }
+		button:hover { background: #e5efec; }
+		.register-link { padding: 9px 16px; color: #fff; background: #536dfe; border-radius: 7px; font-size: 14px; text-decoration: none; }
+		.register-link:hover { background: #4058e8; }
+		.login-link { color: #475467; font-size: 14px; text-decoration: none; }
+		.login-link:hover { color: #087f70; }
+		main { width: min(1060px, 100%); margin: 0 auto; padding: 10vh 24px 48px; }
+		.hero { max-width: 760px; margin: 0 auto 56px; text-align: center; }
+		.eyebrow { margin: 0 0 16px; color: #087f70; font-size: 14px; font-weight: 700; letter-spacing: .08em; }
+		h1 { margin: 0; font-size: clamp(36px, 7vw, 64px); line-height: 1.2; }
+		.description { max-width: 620px; margin: 22px auto 28px; color: #68758a; font-size: 18px; line-height: 1.8; }
+		.hero-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; }
+		.hero-actions a { display: inline-block; padding: 13px 22px; border-radius: 8px; font-weight: 700; text-decoration: none; }
+		.primary-action { color: #fff; background: #536dfe; }
+		.primary-action:hover { background: #4058e8; }
+		.secondary-action { color: #087f70; background: #fff; border: 1px solid #dfe8e5; }
+		.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+		.feature { padding: 26px; background: #fff; border: 1px solid #e7eceb; border-radius: 14px; box-shadow: 0 10px 28px #24344a0d; }
+		.feature h2 { margin: 0 0 10px; font-size: 19px; }
+		.feature p { margin: 0; color: #68758a; line-height: 1.75; }
+		footer { padding: 20px; color: #8792a4; font-size: 14px; text-align: center; }
+		@media (max-width: 680px) {
+			header { align-items: flex-start; flex-direction: column; padding: 16px 6%; }
+			.header-actions { width: 100%; justify-content: space-between; gap: 8px; }
+			.language-switch { margin-right: auto; }
+			main { padding-top: 7vh; }
+			.features { grid-template-columns: 1fr; }
+			.description { font-size: 16px; }
+		}
 	</style>
 </head>
-<body data-page="home">
+<body data-page="public">
 	<header>
-		<strong data-i18n="site.title"></strong>
-		<div class="account">
-			<span id="username"></span>
-			<button id="logout-button" type="button" data-i18n="site.logout"></button>
+		<a class="brand" href="index.html" data-i18n="site.title"></a>
+		<nav class="header-actions" aria-label="Account">
 			<div class="language-switch" id="language-switch"></div>
-		</div>
+			<a class="login-link" href="login.html?next=assets.html" data-i18n="auth.login"></a>
+			<a class="register-link" href="login.html?mode=register&amp;next=assets.html" data-i18n="auth.register"></a>
+		</nav>
 	</header>
 	<main>
-		<section class="card">
-			<h1 data-i18n="site.greeting"></h1>
-			<p><span data-i18n="site.welcome"></span><br><span data-i18n="site.wish"></span></p>
-			<form class="upload-form" id="upload-form">
-				<input id="upload-file" type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.txt,.md,.xls,.xlsx,.csv,.log,.json" required>
-				<button type="submit" data-i18n="site.upload"></button>
-			</form>
-			<p class="notice" id="notice" role="alert"></p>
+		<section class="hero">
+			<p class="eyebrow" data-i18n="site.public_eyebrow"></p>
+			<h1 data-i18n="site.public_title"></h1>
+			<p class="description" data-i18n="site.public_description"></p>
+			<div class="hero-actions">
+				<a class="primary-action" href="login.html?mode=register&amp;next=assets.html" data-i18n="site.public_get_started"></a>
+				<a class="secondary-action" href="login.html?next=assets.html" data-i18n="auth.login"></a>
+			</div>
 		</section>
-		<section class="records">
-			<h2 data-i18n="site.my_uploads"></h2>
-			<div id="upload-list"></div>
+		<section class="features" aria-label="Features">
+			<article class="feature">
+				<h2 data-i18n="site.public_feature_upload_title"></h2>
+				<p data-i18n="site.public_feature_upload"></p>
+			</article>
+			<article class="feature">
+				<h2 data-i18n="site.public_feature_analysis_title"></h2>
+				<p data-i18n="site.public_feature_analysis"></p>
+			</article>
+			<article class="feature">
+				<h2 data-i18n="site.public_feature_manage_title"></h2>
+				<p data-i18n="site.public_feature_manage"></p>
+			</article>
 		</section>
-		<footer data-i18n="site.footer"></footer>
 	</main>
+	<footer data-i18n="site.footer"></footer>
 	<script src="api-config.js"></script>
 	<script src="client.js"></script>
 	<script src="app.js"></script>

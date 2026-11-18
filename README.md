@@ -4,6 +4,7 @@ The project is split into a static frontend and a Python JSON API:
 
 - `frontend/` contains the browser pages and JavaScript.
 - `api_server.py` contains the backend API. Uploaded files and accounts are stored in the root `uploads.db`.
+- `frontend/index.html` is the public landing page. Sign in or register to open `frontend/assets.html`, the authenticated upload workspace.
 
 ## Run locally
 
