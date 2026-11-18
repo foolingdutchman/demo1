@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>文件详情</title>
+	<style>
+		* { box-sizing: border-box; }
+		body { margin: 0; min-height: 100vh; padding: 24px; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
+		main { width: min(820px, 100%); margin: 0 auto; padding: 36px; background: #fff; border: 1px solid #dfe8e5; border-radius: 12px; box-shadow: 0 18px 48px #23304714; }
+		.top { width: min(820px, 100%); margin: 0 auto 12px; display: flex; justify-content: space-between; align-items: center; }
+		.language-switch { display: flex; gap: 10px; font-size: 14px; }
+		button, .button { min-height: 42px; padding: 0 16px; color: #fff; background: #087f70; border: 0; border-radius: 6px; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; }
+		.language-switch button { min-height: auto; padding: 0; color: #087f70; background: transparent; font-weight: 400; }
+		.status { color: #087f70; font-size: 14px; font-weight: 700; }
+		h1 { margin: 14px 0 8px; font-size: 30px; overflow-wrap: anywhere; }
+		.intro { margin: 0 0 24px; color: #68758a; line-height: 1.7; }
+		.details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+		.detail:first-child { grid-column: 1 / -1; }
+		.detail { min-width: 0; padding: 14px; background: #f5f8f7; border-radius: 8px; }
+		.detail span { display: block; margin-bottom: 6px; color: #68758a; font-size: 13px; }
+		.detail strong { display: block; overflow-wrap: anywhere; font-size: 15px; }
+		.panel { margin-top: 16px; padding: 18px; border: 1px solid #e3e9e7; border-radius: 8px; overflow-wrap: anywhere; }
+		.panel h2, .panel h3, .panel h4 { margin: 0 0 12px; }
+		.panel p { color: #68758a; line-height: 1.7; }
+		.panel img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
+		.panel iframe { display: block; width: 100%; height: 70vh; border: 0; }
+		pre { max-height: 360px; margin: 0; overflow: auto; color: #344054; font: 14px/1.65 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+		table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+		th, td { padding: 8px; border-bottom: 1px solid #e3e9e7; white-space: nowrap; }
+		.table-wrap { max-width: 100%; overflow-x: auto; margin: 8px 0 18px; }
+		.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 24px; }
+		.delete { color: #a33b31; background: #fff0ed; border: 1px solid #f1c8c2; }
+		.notice { color: #9c2f25; }
+		@media (max-width: 560px) { main { padding: 24px; } .details { grid-template-columns: 1fr; } }
+	</style>
+</head>
+<body data-page="detail">
+	<div class="top">
+		<a class="button" href="index.html" data-i18n="detail.continue_upload"></a>
+		<div class="language-switch" id="language-switch"></div>
+	</div>
+	<main>
+		<div class="status" data-i18n="detail.title"></div>
+		<h1 id="filename"></h1>
+		<p class="intro" data-i18n="detail.intro"></p>
+		<section class="details" id="file-details"></section>
+		<p class="notice" id="notice" role="alert"></p>
+		<section class="panel" id="preview"></section>
+		<section class="panel" id="analysis" hidden></section>
+		<div class="actions">
+			<button id="download-button" type="button" data-i18n="detail.download"></button>
+			<button id="analyze-button" type="button" data-i18n="detail.analyze"></button>
+			<button id="delete-button" class="delete" type="button" data-i18n="detail.delete"></button>
+		</div>
+	</main>
+	<script src="api-config.js"></script>
+	<script src="client.js"></script>
+	<script src="app.js"></script>
+</body>
+</html>

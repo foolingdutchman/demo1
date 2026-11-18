@@ -1,7 +1,6 @@
 import base64
 import re
 from collections import Counter
-from html import escape
 from io import BytesIO
 
 from i18n import translate
@@ -30,30 +29,18 @@ def extract_pdf_text(pdf_bytes, locale="zh-CN"):
 def build_pdf_analysis(pdf_bytes, locale="zh-CN"):
     page_count, text = extract_pdf_text(pdf_bytes, locale)
     word_count = len(re.findall(r"\b[\w'-]+\b", text))
-    result = (
-        f'<section class="analysis"><h2>{translate(locale, "pdf.title")}</h2><ul>'
-        f'<li>{translate(locale, "pdf.pages")}: {page_count:,}</li>'
-        f'<li>{translate(locale, "pdf.characters")}: {len(text):,}</li>'
-        f'<li>{translate(locale, "pdf.words")}: {word_count:,}</li>'
-        '</ul>'
-    )
-
-    if text:
-        tokens = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text.lower())
-        frequent = Counter(token for token in tokens if len(token) > 1).most_common(10)
-        if frequent:
-            keywords = ", ".join(
-                f"{escape(word)} ({count})" for word, count in frequent
-            )
-            result += f"<p>{translate(locale, 'pdf.frequent_words', words=keywords)}</p>"
-        result += (
-            f"<details><summary>{translate(locale, 'pdf.extracted_text')}</summary>"
-            f"<pre>{escape(text)}</pre></details>"
-        )
-    else:
-        result += f"<p>{translate(locale, 'pdf.no_text')}</p>"
-
-    return result + "</section>"
+    tokens = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", text.lower())
+    frequent = Counter(token for token in tokens if len(token) > 1).most_common(10)
+    return {
+        "type": "pdf",
+        "page_count": page_count,
+        "character_count": len(text),
+        "word_count": word_count,
+        "frequent_words": [
+            {"word": word, "count": count} for word, count in frequent
+        ],
+        "text": text,
+    }
 
 
 def run_streamlit_app():

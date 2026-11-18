@@ -35,3 +35,8 @@ def get_locale(accept_language="", preferred=None):
 def translate(locale, key, **values):
     language = locale if locale in SUPPORTED_LOCALES else "zh-CN"
     return _CATALOG[language][key].format(**values)
+
+
+def get_messages(locale):
+    language = locale if locale in SUPPORTED_LOCALES else "zh-CN"
+    return _CATALOG[language]

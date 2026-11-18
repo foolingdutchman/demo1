@@ -1,6 +1,6 @@
 from io import BytesIO
+import json
 import zipfile
-from html import escape
 
 import pandas as pd
 from openpyxl.utils.exceptions import InvalidFileException
@@ -26,23 +26,9 @@ def summarize_sheet(data, locale="zh-CN"):
     return missing_summary, numeric_data, numeric_summary
 
 
-def _render_table(data, index=False):
-    return (
-        '<div class="analysis-table-wrap">'
-        + data.to_html(
-            index=index,
-            border=0,
-            classes="analysis-table",
-            escape=True,
-            na_rep="",
-        )
-        + "</div>"
-    )
-
-
 def build_excel_analysis(file_bytes, locale="zh-CN"):
     try:
-        sections = []
+        sheets = []
         with pd.ExcelFile(BytesIO(file_bytes)) as workbook:
             if not workbook.sheet_names:
                 raise ValueError(translate(locale, "excel.no_sheets"))
@@ -50,37 +36,36 @@ def build_excel_analysis(file_bytes, locale="zh-CN"):
             for sheet_name in workbook.sheet_names:
                 data = pd.read_excel(workbook, sheet_name=sheet_name)
                 missing_summary, _, numeric_summary = summarize_sheet(data, locale)
-                if numeric_summary is not None:
-                    numeric_summary.columns = [
-                        translate(locale, f"excel.stat.{column}")
-                        for column in numeric_summary.columns
-                    ]
-                sections.append(
-                    f'<section class="analysis-sheet"><h3>{escape(sheet_name)}</h3>'
-                    f'<p>{translate(locale, "excel.rows_columns", rows=f"{len(data):,}", columns=f"{len(data.columns):,}")}</p>'
-                    f'<h4>{translate(locale, "excel.preview")}</h4>'
-                    f'{_render_table(data.head(20))}'
-                    f'<h4>{translate(locale, "excel.columns_missing")}</h4>'
-                    f'{_render_table(missing_summary, index=True)}'
+                preview = json.loads(
+                    data.head(20).to_json(orient="split", date_format="iso")
                 )
+                missing = [
+                    {
+                        "column": str(column),
+                        "data_type": str(missing_summary.loc[column].iloc[0]),
+                        "count": int(missing_summary.loc[column].iloc[1]),
+                        "percent": float(missing_summary.loc[column].iloc[2]),
+                    }
+                    for column in data.columns
+                ]
+                summary = None
                 if numeric_summary is not None:
-                    sections.extend(
-                        (
-                            f"<h4>{translate(locale, 'excel.numeric_summary')}</h4>",
-                            _render_table(numeric_summary, index=True),
-                        )
+                    summary_frame = numeric_summary.rename_axis("column").reset_index()
+                    summary = json.loads(
+                        summary_frame.to_json(orient="split", date_format="iso")
                     )
-                else:
-                    sections.append(
-                        f"<p>{translate(locale, 'excel.no_numeric')}</p>"
-                    )
-                sections.append("</section>")
+                sheets.append(
+                    {
+                        "name": str(sheet_name),
+                        "rows": len(data),
+                        "columns": len(data.columns),
+                        "preview": preview,
+                        "missing": missing,
+                        "numeric_summary": summary,
+                    }
+                )
 
-        return (
-            f'<section class="analysis"><h2>{translate(locale, "analysis.excel")}</h2>'
-            + "".join(sections)
-            + "</section>"
-        )
+        return {"type": "excel", "sheets": sheets}
     except (
         ImportError,
         InvalidFileException,
