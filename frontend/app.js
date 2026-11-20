@@ -2,7 +2,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 	try {
 		await App.init();
 		const page = document.body.dataset.page;
-		if (page === "login") {
+		if (page === "public") {
+			initMarketBoard();
+		} else if (page === "market-detail") {
+			await initMarketDetailPage();
+		} else if (page === "login") {
 			await initLoginPage();
 		} else if (page === "assets") {
 			await initAssetsPage();
@@ -13,6 +17,348 @@ document.addEventListener("DOMContentLoaded", async () => {
 		App.setNotice(error.message);
 	}
 });
+
+let importCottonMarketPrices = null;
+
+async function initMarketBoard() {
+	const refreshButton = document.getElementById("market-refresh");
+	refreshButton.addEventListener("click", loadMarketPrices);
+	await loadMarketPrices();
+}
+
+async function initMarketDetailPage() {
+	const query = new URLSearchParams(location.search);
+	const asset = query.get("asset");
+	const assets = ["gold", "btc", "eth", "ice_cotton", "zce_cotton", "usd_cny"];
+	const returnPage = query.get("return") === "assets" ? "assets.html" : "index.html";
+	document.getElementById("market-detail-back").href = returnPage;
+	document.getElementById("market-detail-brand").href = "assets.html";
+	if (!assets.includes(asset)) {
+		document.getElementById("market-history-latest").textContent = App.t(
+			"market.unavailable_short",
+		);
+		document.getElementById("market-detail-status").textContent = App.t(
+			"market.invalid_asset",
+		);
+		return;
+	}
+
+	const assetName = App.t(`market.${asset}`);
+	document.title = `${assetName} - ${App.t("market.title")}`;
+	document.getElementById("market-detail-title").textContent = assetName;
+	const unitKey = asset === "btc" || asset === "eth"
+		? "market.crypto_unit"
+		: `market.${asset}_unit`;
+	document.getElementById("market-detail-unit").textContent = App.t(
+		unitKey,
+	);
+	document.getElementById("market-history-source").textContent = App.t(
+		`market.history_source.${asset}`,
+	);
+	if (asset === "zce_cotton") {
+		document.getElementById("market-import-cotton-panel").hidden = false;
+		for (const id of [
+			"market-import-customs-cost",
+			"market-import-clearance-fee",
+			"market-import-tariff-amount",
+		]) {
+			document.getElementById(id).addEventListener("input", updateImportCottonPrice);
+		}
+	}
+	loadMarketDetailCurrentPrice(asset);
+	try {
+		const result = await App.api(
+			`/api/market-history?asset=${encodeURIComponent(asset)}`,
+		);
+		if (!Array.isArray(result.prices) || result.prices.length === 0) {
+			throw new Error(App.t("market.history_unavailable"));
+		}
+		const latest = result.prices[result.prices.length - 1];
+		const digits = asset === "usd_cny" ? 4 : 2;
+		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+			minimumFractionDigits: digits,
+			maximumFractionDigits: digits,
+		});
+		document.getElementById("market-history-latest").textContent =
+			`${result.currency} ${formatter.format(latest.price)}`;
+		document.getElementById("market-history-date").textContent = App.t(
+			"market.history_as_of",
+			{ date: latest.date },
+		);
+		document.getElementById("market-detail-updated").textContent = App.t(
+			"market.updated",
+			{
+				time: new Intl.DateTimeFormat(document.documentElement.lang, {
+					dateStyle: "short",
+					timeStyle: "medium",
+				}).format(new Date(result.updated_at)),
+			},
+		);
+		renderMarketCandlestickChart(result.prices, result.currency, formatter, assetName);
+	} catch (error) {
+		document.getElementById("market-history-latest").textContent = App.t(
+			"market.unavailable_short",
+		);
+		document.getElementById("market-detail-status").textContent = error.message;
+	}
+}
+
+async function loadMarketDetailCurrentPrice(asset) {
+	const value = document.getElementById("market-current-price");
+	const status = document.getElementById("market-current-status");
+	try {
+		const result = await App.api("/api/market-prices");
+		const price = result.prices && result.prices[asset];
+		if (!Number.isFinite(price)) {
+			throw new Error(App.t("market.unavailable"));
+		}
+		const currency = result.asset_currencies && result.asset_currencies[asset]
+			? result.asset_currencies[asset]
+			: result.currency;
+		const digits = asset === "usd_cny" ? 4 : 2;
+		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+			minimumFractionDigits: digits,
+			maximumFractionDigits: digits,
+		});
+		value.textContent = `${currency} ${formatter.format(price)}`;
+		document.getElementById("market-current-updated").textContent = App.t(
+			"market.updated",
+			{
+				time: new Intl.DateTimeFormat(document.documentElement.lang, {
+					dateStyle: "short",
+					timeStyle: "medium",
+				}).format(new Date(result.updated_at)),
+			},
+		);
+		if (asset === "zce_cotton") {
+			importCottonMarketPrices = result.prices;
+			updateImportCottonPrice();
+		}
+	} catch (error) {
+		value.textContent = App.t("market.unavailable_short");
+		status.textContent = error.message || App.t("market.unavailable");
+		if (asset === "zce_cotton") {
+			document.getElementById("market-import-cotton-price").textContent =
+				App.t("market.unavailable_short");
+			document.getElementById("market-import-cotton-status").textContent =
+				App.t("market.import_cotton_unavailable");
+		}
+	}
+}
+
+function updateImportCottonPrice() {
+	const value = document.getElementById("market-import-cotton-price");
+	const status = document.getElementById("market-import-cotton-status");
+	const fields = [
+		document.getElementById("market-import-customs-cost"),
+		document.getElementById("market-import-clearance-fee"),
+		document.getElementById("market-import-tariff-amount"),
+	];
+	const parameters = fields.map((field) => field.valueAsNumber);
+	const validParameters = fields.map((field, index) => {
+		const valid = field.value !== "" && Number.isFinite(parameters[index])
+			&& parameters[index] >= 0;
+		field.setAttribute("aria-invalid", String(!valid));
+		return valid;
+	});
+
+	if (!validParameters.every(Boolean)) {
+		value.textContent = "—";
+		status.textContent = App.t("market.import_cotton_invalid_parameters");
+		return;
+	}
+
+	const prices = importCottonMarketPrices;
+	if (!prices || !Number.isFinite(prices.zce_cotton)
+		|| !Number.isFinite(prices.usd_cny) || prices.usd_cny <= 0) {
+		value.textContent = App.t("market.unavailable_short");
+		status.textContent = App.t("market.import_cotton_unavailable");
+		return;
+	}
+
+	const [customsCost, clearanceFee, tariffAmountCny] = parameters;
+	const price = (
+		(prices.zce_cotton - customsCost) / 1.09
+		/ prices.usd_cny / 22.0462
+		- tariffAmountCny / prices.usd_cny / 22.0462
+		- clearanceFee
+	);
+	if (!Number.isFinite(price) || price <= 0) {
+		value.textContent = "—";
+		status.textContent = App.t("market.import_cotton_nonpositive_result");
+		return;
+	}
+
+	const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2,
+	});
+	value.textContent = `US¢ ${formatter.format(price)}`;
+	status.textContent = "";
+}
+
+function renderMarketCandlestickChart(points, currency, formatter, assetName) {
+	if (points.some((point) => ![
+		point.open, point.high, point.low, point.close,
+	].every(Number.isFinite))) {
+		throw new Error(App.t("market.history_unavailable"));
+	}
+	const container = document.getElementById("market-history-chart");
+	container.replaceChildren();
+	const namespace = "http://www.w3.org/2000/svg";
+	const width = Math.max(760, points.length * 32);
+	const height = 320;
+	const left = 78;
+	const right = 18;
+	const top = 18;
+	const bottom = 48;
+	const plotHeight = height - top - bottom;
+	const plotWidth = width - left - right;
+	const rawMinimum = Math.min(...points.map(({ low }) => low));
+	const rawMaximum = Math.max(...points.map(({ high }) => high));
+	const padding = (rawMaximum - rawMinimum) * 0.08
+		|| Math.max(rawMaximum * 0.02, 1);
+	const minimum = Math.max(0, rawMinimum - padding);
+	const maximum = rawMaximum + padding;
+	const priceRange = maximum - minimum;
+	const step = plotWidth / points.length;
+	const candleWidth = Math.min(16, step * 0.58);
+	const svg = document.createElementNS(namespace, "svg");
+	svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+	svg.setAttribute("role", "img");
+	svg.setAttribute("aria-label", App.t("market.history_chart_aria", {
+		asset: assetName,
+	}));
+	const title = document.createElementNS(namespace, "title");
+	title.textContent = App.t("market.history_chart_title");
+	svg.append(title);
+	const priceY = (price) => top + ((maximum - price) / priceRange) * plotHeight;
+
+	for (let tick = 0; tick <= 4; tick += 1) {
+		const y = top + (plotHeight * tick) / 4;
+		const value = maximum - priceRange * tick / 4;
+		const line = document.createElementNS(namespace, "line");
+		line.setAttribute("x1", String(left));
+		line.setAttribute("x2", String(width - right));
+		line.setAttribute("y1", String(y));
+		line.setAttribute("y2", String(y));
+		line.setAttribute("class", "chart-grid");
+		svg.append(line);
+		const label = document.createElementNS(namespace, "text");
+		label.setAttribute("x", String(left - 10));
+		label.setAttribute("y", String(y + 4));
+		label.setAttribute("text-anchor", "end");
+		label.setAttribute("class", "chart-axis-label");
+		label.textContent = formatter.format(value);
+		svg.append(label);
+	}
+
+	const labelInterval = Math.max(1, Math.ceil(points.length / 6));
+	points.forEach((point, index) => {
+		const center = left + index * step + step / 2;
+		const direction = point.close > point.open
+			? "up"
+			: point.close < point.open ? "down" : "flat";
+		const wick = document.createElementNS(namespace, "line");
+		wick.setAttribute("x1", String(center));
+		wick.setAttribute("x2", String(center));
+		wick.setAttribute("y1", String(priceY(point.high)));
+		wick.setAttribute("y2", String(priceY(point.low)));
+		wick.setAttribute("class", `candle-wick candle-${direction}`);
+		svg.append(wick);
+		const openY = priceY(point.open);
+		const closeY = priceY(point.close);
+		const body = document.createElementNS(namespace, "rect");
+		body.setAttribute("x", String(center - candleWidth / 2));
+		body.setAttribute("y", String(Math.min(openY, closeY)));
+		body.setAttribute("width", String(candleWidth));
+		body.setAttribute("height", String(Math.max(2, Math.abs(closeY - openY))));
+		body.setAttribute("class", `candle-body candle-${direction}`);
+		const tooltip = document.createElementNS(namespace, "title");
+		tooltip.textContent = App.t("market.candle_tooltip", {
+			date: point.date,
+			currency,
+			open: formatter.format(point.open),
+			high: formatter.format(point.high),
+			low: formatter.format(point.low),
+			close: formatter.format(point.close),
+		});
+		body.append(tooltip);
+		svg.append(body);
+		if (index % labelInterval === 0 || index === points.length - 1) {
+			const label = document.createElementNS(namespace, "text");
+			label.setAttribute("x", String(center));
+			label.setAttribute("y", String(height - 16));
+			label.setAttribute("text-anchor", "middle");
+			label.setAttribute("class", "chart-axis-label");
+			label.textContent = point.date.slice(5);
+			svg.append(label);
+		}
+	});
+	container.append(svg);
+}
+
+async function loadMarketPrices() {
+	const refreshButton = document.getElementById("market-refresh");
+	const status = document.getElementById("market-status");
+	const updated = document.getElementById("market-updated");
+	refreshButton.disabled = true;
+	status.textContent = "";
+	updated.textContent = "";
+	for (const value of document.querySelectorAll(
+		"[data-market-value], [data-market-derived]",
+	)) {
+		value.textContent = App.t("market.loading");
+	}
+	try {
+		const result = await App.api("/api/market-prices");
+		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+			minimumFractionDigits: 2,
+			maximumFractionDigits: 2,
+		});
+		for (const [asset, price] of Object.entries(result.prices)) {
+			const value = document.querySelector(`[data-market-value="${asset}"]`);
+			const currency = result.asset_currencies && result.asset_currencies[asset]
+				? result.asset_currencies[asset]
+				: result.currency;
+			const priceFormatter = asset === "usd_cny"
+				? new Intl.NumberFormat(document.documentElement.lang, {
+					minimumFractionDigits: 4,
+					maximumFractionDigits: 4,
+				})
+				: formatter;
+			if (value) value.textContent = `${currency} ${priceFormatter.format(price)}`;
+		}
+		const importCottonPrice = result.derived_prices && result.derived_prices.import_cotton;
+		if (!Number.isFinite(importCottonPrice)) {
+			throw new Error(App.t("market.import_cotton_unavailable"));
+		}
+		const derivedFormatter = new Intl.NumberFormat(document.documentElement.lang, {
+			minimumFractionDigits: 2,
+			maximumFractionDigits: 2,
+		});
+		for (const value of document.querySelectorAll(
+			'[data-market-derived="import_cotton"]',
+		)) {
+			value.textContent = `US¢ ${derivedFormatter.format(importCottonPrice)}`;
+		}
+		updated.textContent = App.t("market.updated", {
+			time: new Intl.DateTimeFormat(document.documentElement.lang, {
+				dateStyle: "short",
+				timeStyle: "medium",
+			}).format(new Date(result.updated_at)),
+		});
+	} catch (error) {
+		status.textContent = error.message || App.t("market.unavailable");
+		for (const value of document.querySelectorAll(
+			"[data-market-value], [data-market-derived]",
+		)) {
+			value.textContent = App.t("market.unavailable_short");
+		}
+	} finally {
+		refreshButton.disabled = false;
+	}
+}
 
 function goToLogin(next) {
 	window.location.href = `login.html?next=${encodeURIComponent(next)}`;
@@ -99,6 +445,7 @@ async function initAssetsPage() {
 		goToLogin("assets.html");
 		return;
 	}
+	initMarketBoard();
 	document.getElementById("username").textContent = App.t("site.logged_in", {
 		username: session.user.username,
 	});
@@ -220,6 +567,30 @@ async function initDetailPage() {
 			renderAnalysis(result.analysis);
 		} catch (error) {
 			handleUnauthorized(error, `detail.html?id=${id}`);
+		}
+	});
+	const aiAnalyzeButton = document.getElementById("ai-analyze-button");
+	aiAnalyzeButton.addEventListener("click", async () => {
+		const panel = document.getElementById("ai-analysis");
+		const status = document.getElementById("ai-analysis-status");
+		const output = document.getElementById("ai-analysis-output");
+		aiAnalyzeButton.disabled = true;
+		panel.hidden = false;
+		status.textContent = App.t("ai.loading");
+		output.replaceChildren();
+		try {
+			const result = await App.api(`/api/uploads/${id}/ai-analysis`, {
+				method: "POST",
+			});
+			renderAiAnalysis(result.analysis);
+		} catch (error) {
+			if (error.status === 401) {
+				handleUnauthorized(error, `detail.html?id=${id}`);
+			} else {
+				status.textContent = error.message;
+			}
+		} finally {
+			aiAnalyzeButton.disabled = false;
 		}
 	});
 	document.getElementById("download-button").addEventListener("click", async () => {
@@ -455,4 +826,23 @@ function renderAnalysis(analysis) {
 		message.textContent = analysis.message;
 		container.append(message);
 	}
+}
+
+function renderAiAnalysis(analysis) {
+	if (!analysis || analysis.type !== "ai" || typeof analysis.text !== "string") {
+		throw new Error(App.t("ai.provider_failed"));
+	}
+	const status = document.getElementById("ai-analysis-status");
+	const output = document.getElementById("ai-analysis-output");
+	status.textContent = "";
+	output.replaceChildren();
+	if (analysis.model) {
+		const model = document.createElement("p");
+		model.textContent = `${App.t("ai.model_label")}: ${analysis.model}`;
+		output.append(model);
+	}
+	const result = document.createElement("pre");
+	result.className = "ai-output";
+	result.textContent = analysis.text;
+	output.append(result);
 }

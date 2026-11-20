@@ -8,7 +8,9 @@
 		* { box-sizing: border-box; }
 		body { margin: 0; min-height: 100vh; padding: 24px; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
 		main { width: min(820px, 100%); margin: 0 auto; padding: 36px; background: #fff; border: 1px solid #dfe8e5; border-radius: 12px; box-shadow: 0 18px 48px #23304714; }
-		.top { width: min(820px, 100%); margin: 0 auto 12px; display: flex; justify-content: space-between; align-items: center; }
+		.top { width: min(820px, 100%); margin: 0 auto 12px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+		.brand { color: #087f70; font-size: 20px; font-weight: 700; text-decoration: none; }
+		.top-actions { display: flex; align-items: center; gap: 14px; }
 		.language-switch { display: flex; gap: 10px; font-size: 14px; }
 		button, .button { min-height: 42px; padding: 0 16px; color: #fff; background: #087f70; border: 0; border-radius: 6px; font: inherit; font-weight: 700; cursor: pointer; text-decoration: none; }
 		.language-switch button { min-height: auto; padding: 0; color: #087f70; background: transparent; font-weight: 400; }
@@ -23,6 +25,7 @@
 		.panel { margin-top: 16px; padding: 18px; border: 1px solid #e3e9e7; border-radius: 8px; overflow-wrap: anywhere; }
 		.panel h2, .panel h3, .panel h4 { margin: 0 0 12px; }
 		.panel p { color: #68758a; line-height: 1.7; }
+		.ai-output { max-height: 70vh; padding: 14px; background: #f5f8f7; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 		.panel img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
 		.panel iframe { display: block; width: 100%; height: 70vh; border: 0; }
 		pre { max-height: 360px; margin: 0; overflow: auto; color: #344054; font: 14px/1.65 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -36,10 +39,13 @@
 	</style>
 </head>
 <body data-page="detail">
-	<div class="top">
-		<a class="button" href="assets.html" data-i18n="detail.continue_upload"></a>
-		<div class="language-switch" id="language-switch"></div>
-	</div>
+	<header class="top">
+		<a class="brand" href="assets.html" data-i18n="site.title"></a>
+		<nav class="top-actions" aria-label="Page navigation">
+			<a class="button" href="assets.html" data-i18n="detail.continue_upload"></a>
+			<div class="language-switch" id="language-switch"></div>
+		</nav>
+	</header>
 	<main>
 		<div class="status" data-i18n="detail.title"></div>
 		<h1 id="filename"></h1>
@@ -48,9 +54,16 @@
 		<p class="notice" id="notice" role="alert"></p>
 		<section class="panel" id="preview"></section>
 		<section class="panel" id="analysis" hidden></section>
+		<section class="panel" id="ai-analysis" hidden aria-labelledby="ai-analysis-heading">
+			<h2 id="ai-analysis-heading" data-i18n="ai.result_title"></h2>
+			<p id="ai-analysis-status" role="status"></p>
+			<div id="ai-analysis-output"></div>
+		</section>
+		<p class="intro" data-i18n="ai.disclosure"></p>
 		<div class="actions">
 			<button id="download-button" type="button" data-i18n="detail.download"></button>
 			<button id="analyze-button" type="button" data-i18n="detail.analyze"></button>
+			<button id="ai-analyze-button" type="button" data-i18n="ai.analyze"></button>
 			<button id="delete-button" class="delete" type="button" data-i18n="detail.delete"></button>
 		</div>
 	</main>

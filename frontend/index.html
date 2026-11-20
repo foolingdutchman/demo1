@@ -31,6 +31,21 @@
 		.feature { padding: 26px; background: #fff; border: 1px solid #e7eceb; border-radius: 14px; box-shadow: 0 10px 28px #24344a0d; }
 		.feature h2 { margin: 0 0 10px; font-size: 19px; }
 		.feature p { margin: 0; color: #68758a; line-height: 1.75; }
+		.market { margin: 0 0 48px; padding: 26px; background: #fff; border: 1px solid #e7eceb; border-radius: 14px; box-shadow: 0 10px 28px #24344a0d; }
+		.market-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+		.market-heading h2 { margin: 0 0 6px; font-size: 22px; }
+		.market-heading p, .market-updated { margin: 0; color: #68758a; font-size: 14px; }
+		.market-prices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+		.market-price { display: block; min-width: 0; padding: 20px; color: inherit; background: #f8fafc; border: 1px solid #e7eceb; border-radius: 10px; text-decoration: none; }
+		.market-price:hover, .market-price:focus-visible { border-color: #9dc9c2; outline: 2px solid #087f7030; }
+		.market-price h3 { margin: 0 0 12px; color: #68758a; font-size: 15px; }
+		.market-value { margin: 0; color: #233047; font-size: clamp(20px, 3vw, 28px); font-weight: 700; overflow-wrap: anywhere; }
+		.market-unit { margin: 6px 0 0; color: #8792a4; font-size: 13px; }
+		.market-derived { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e7eceb; }
+		.market-derived-label, .market-derived-unit { display: block; color: #68758a; font-size: 12px; line-height: 1.6; }
+		.market-derived-value { display: block; margin-top: 3px; color: #087f70; font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+		.market-status { margin: 16px 0 0; color: #68758a; font-size: 14px; }
+		.market-status:empty { display: none; }
 		footer { padding: 20px; color: #8792a4; font-size: 14px; text-align: center; }
 		@media (max-width: 680px) {
 			header { align-items: flex-start; flex-direction: column; padding: 16px 6%; }
@@ -38,6 +53,8 @@
 			.language-switch { margin-right: auto; }
 			main { padding-top: 7vh; }
 			.features { grid-template-columns: 1fr; }
+			.market-prices { grid-template-columns: 1fr; }
+			.market-heading { flex-direction: column; }
 			.description { font-size: 16px; }
 		}
 	</style>
@@ -60,6 +77,54 @@
 				<a class="primary-action" href="login.html?mode=register&amp;next=assets.html" data-i18n="site.public_get_started"></a>
 				<a class="secondary-action" href="login.html?next=assets.html" data-i18n="auth.login"></a>
 			</div>
+		</section>
+		<section class="market" aria-labelledby="market-title">
+			<div class="market-heading">
+				<div>
+					<h2 id="market-title" data-i18n="market.title"></h2>
+					<p data-i18n="market.description"></p>
+				</div>
+				<button id="market-refresh" type="button" data-i18n="market.refresh"></button>
+			</div>
+			<div class="market-prices" id="market-prices" aria-live="polite">
+				<a class="market-price" href="financial_assets_marketing_detail.html?asset=gold&amp;return=index">
+					<h3 data-i18n="market.gold"></h3>
+					<p class="market-value" data-market-value="gold" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.gold_unit"></p>
+				</a>
+				<a class="market-price" href="financial_assets_marketing_detail.html?asset=btc&amp;return=index">
+					<h3 data-i18n="market.btc"></h3>
+					<p class="market-value" data-market-value="btc" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.crypto_unit"></p>
+				</a>
+				<a class="market-price" href="financial_assets_marketing_detail.html?asset=eth&amp;return=index">
+					<h3 data-i18n="market.eth"></h3>
+					<p class="market-value" data-market-value="eth" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.crypto_unit"></p>
+				</a>
+				<a class="market-price" href="financial_assets_marketing_detail.html?asset=ice_cotton&amp;return=index">
+					<h3 data-i18n="market.ice_cotton"></h3>
+					<p class="market-value" data-market-value="ice_cotton" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.ice_cotton_unit"></p>
+				</a>
+				<a class="market-price" href="financial_assets_marketing_detail.html?asset=zce_cotton&amp;return=index">
+					<h3 data-i18n="market.zce_cotton"></h3>
+					<p class="market-value" data-market-value="zce_cotton" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.zce_cotton_unit"></p>
+					<div class="market-derived">
+						<span class="market-derived-label" data-i18n="market.import_cotton_price"></span>
+						<strong class="market-derived-value" data-market-derived="import_cotton" data-i18n="market.loading"></strong>
+						<span class="market-derived-unit" data-i18n="market.import_cotton_unit"></span>
+					</div>
+				</a>
+				<a class="market-price" href="financial_assets_marketing_detail.html?asset=usd_cny&amp;return=index">
+					<h3 data-i18n="market.usd_cny"></h3>
+					<p class="market-value" data-market-value="usd_cny" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.usd_cny_unit"></p>
+				</a>
+			</div>
+			<p class="market-status" id="market-status" role="status"></p>
+			<p class="market-updated" id="market-updated"></p>
 		</section>
 		<section class="features" aria-label="Features">
 			<article class="feature">

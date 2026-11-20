@@ -1,12 +1,16 @@
+import base64
 from contextlib import closing
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from html.parser import HTMLParser
 import hashlib
 import hmac
 import json
 import logging
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -14,18 +18,38 @@ import re
 import secrets
 import sqlite3
 import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
+from urllib.request import Request, urlopen
 
-from excel_analysis import ExcelAnalysisError, build_excel_analysis
+from excel_analysis import ExcelAnalysisError, build_excel_analysis, extract_excel_text
 from i18n import SUPPORTED_LOCALES, get_locale, get_messages, translate
 from image_analysis import IMAGE_MIME_TYPES, is_image_file
-from pdf_analysis import PdfAnalysisError, build_pdf_analysis
+from pdf_analysis import PdfAnalysisError, build_pdf_analysis, extract_pdf_text
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_JSON_BYTES = 16 * 1024
 PASSWORD_ITERATIONS = 600_000
 SESSION_LIFETIME = 7 * 24 * 60 * 60
+AI_API_BASE_URL = os.environ.get(
+    "AI_API_BASE_URL", "https://api.openai.com/v1"
+).strip().rstrip("/")
+AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
+AI_MODEL = os.environ.get("AI_MODEL", "").strip()
+AI_MAX_INPUT_CHARS = int(os.environ.get("AI_MAX_INPUT_CHARS", "60000"))
+AI_API_TIMEOUT_SECONDS = int(os.environ.get("AI_API_TIMEOUT_SECONDS", "60"))
+AI_SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+COTTON_CUSTOMS_COST_CNY = 100
+IMPORT_VAT_FACTOR = 1.09
+US_CENTS_PER_METRIC_TON_CONVERSION = 22.0462
+COTTON_CLEARANCE_COST_US_CENTS = 1.5
+NO_QUOTA_TARIFF_FACTOR = 1.4
 DATABASE_PATH = Path(__file__).with_name("uploads.db")
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json"}
 EXCEL_EXTENSIONS = {".xls", ".xlsx"}
@@ -40,6 +64,49 @@ CORS_ORIGINS = {
     ).split(",")
     if origin.strip()
 }
+
+
+class AIAnalysisInputError(Exception):
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+class AIProviderError(Exception):
+    def __init__(self, status, code):
+        super().__init__(code)
+        self.status = status
+        self.code = code
+
+
+class BankOfChinaRateParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._is_usd_row = False
+        self._in_cell = False
+        self._cell_parts = []
+        self.usd_cells = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._is_usd_row = dict(attrs).get("data-currency") == "美元"
+            if self._is_usd_row:
+                self.usd_cells = []
+        elif tag == "td" and self._is_usd_row:
+            self._in_cell = True
+            self._cell_parts = []
+
+    def handle_data(self, data):
+        if self._in_cell:
+            self._cell_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "td" and self._in_cell:
+            self.usd_cells.append("".join(self._cell_parts).strip())
+            self._in_cell = False
+        elif tag == "tr":
+            self._is_usd_row = False
 
 
 def initialize_database():
@@ -149,6 +216,142 @@ def build_analysis(filename, file_bytes, locale):
         "character_count": len(text),
         "word_count": len(text.split()),
     }
+
+
+def build_ai_messages(filename, file_bytes, locale):
+    extension = Path(filename).suffix.lower()
+    if is_image_file(filename):
+        image_mime_type = IMAGE_MIME_TYPES[extension]
+        if image_mime_type not in AI_SUPPORTED_IMAGE_MIME_TYPES:
+            raise AIAnalysisInputError(
+                415,
+                "ai.unsupported_image",
+                translate(locale, "ai.unsupported_image"),
+            )
+        image_data = base64.b64encode(file_bytes).decode("ascii")
+        user_content = [
+            {"type": "text", "text": translate(locale, "ai.image_prompt")},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{image_mime_type};base64,{image_data}",
+                },
+            },
+        ]
+    else:
+        try:
+            if extension in PDF_EXTENSIONS:
+                _, document_text = extract_pdf_text(file_bytes, locale)
+                if not document_text.strip():
+                    raise AIAnalysisInputError(
+                        422,
+                        "ai.pdf_no_text",
+                        translate(locale, "ai.pdf_no_text"),
+                    )
+            elif extension in EXCEL_EXTENSIONS:
+                document_text = extract_excel_text(file_bytes)
+            elif extension in TEXT_EXTENSIONS:
+                document_text = decode_text_file(file_bytes)
+                if document_text is None:
+                    raise AIAnalysisInputError(
+                        422,
+                        "ai.invalid_encoding",
+                        translate(locale, "ai.invalid_encoding"),
+                    )
+            else:
+                raise AIAnalysisInputError(
+                    415,
+                    "ai.unsupported",
+                    translate(locale, "ai.unsupported"),
+                )
+        except (PdfAnalysisError, ExcelAnalysisError) as error:
+            raise AIAnalysisInputError(
+                422,
+                "ai.document_read_failed",
+                translate(locale, "ai.document_read_failed"),
+            ) from error
+
+        if not document_text.strip():
+            raise AIAnalysisInputError(
+                422,
+                "ai.empty_content",
+                translate(locale, "ai.empty_content"),
+            )
+        if len(document_text) > AI_MAX_INPUT_CHARS:
+            raise AIAnalysisInputError(
+                413,
+                "ai.input_too_large",
+                translate(
+                    locale,
+                    "ai.input_too_large",
+                    limit=AI_MAX_INPUT_CHARS,
+                ),
+            )
+        user_content = (
+            f"{translate(locale, 'ai.document_prompt')}\n\n{document_text}"
+        )
+
+    return [
+        {"role": "system", "content": translate(locale, "ai.system_prompt")},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def request_ai_completion(messages):
+    if not AI_API_KEY or not AI_MODEL:
+        raise AIProviderError(503, "ai.not_configured")
+    endpoint = urlsplit(AI_API_BASE_URL)
+    if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+        raise AIProviderError(503, "ai.invalid_configuration")
+    if endpoint.scheme != "https" and endpoint.hostname not in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }:
+        raise AIProviderError(503, "ai.invalid_configuration")
+
+    request = Request(
+        f"{AI_API_BASE_URL}/chat/completions",
+        data=json.dumps(
+            {
+                "model": AI_MODEL,
+                "messages": messages,
+            }
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {AI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=AI_API_TIMEOUT_SECONDS) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        content = result["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            content = "\n".join(
+                part["text"]
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("AI provider returned an empty response")
+        return content.strip()
+    except HTTPError as error:
+        logging.warning("AI provider returned HTTP %s", error.code)
+        raise AIProviderError(502, "ai.provider_failed") from error
+    except (
+        URLError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+        KeyError,
+        IndexError,
+        TypeError,
+        ValueError,
+    ) as error:
+        logging.warning("AI provider request failed: %s", type(error).__name__)
+        raise AIProviderError(502, "ai.provider_failed") from error
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -376,6 +579,240 @@ class ApiHandler(BaseHTTPRequestHandler):
             cookie="session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
         )
 
+    @staticmethod
+    def _fetch_public_json(url):
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "demo1-market-board/1.0",
+            },
+        )
+        with urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _fetch_public_text(url):
+        request = Request(
+            url,
+            headers={
+                "Accept": "text/plain",
+                "User-Agent": "Mozilla/5.0 (compatible; demo1-market-board/1.0)",
+                "Referer": "https://finance.sina.com.cn/",
+            },
+        )
+        with urlopen(request, timeout=8) as response:
+            return response.read().decode("gbk")
+
+    @staticmethod
+    def _fetch_public_html(url):
+        request = Request(
+            url,
+            headers={
+                "Accept": "text/html",
+                "User-Agent": "Mozilla/5.0 (compatible; demo1-market-board/1.0)",
+            },
+        )
+        with urlopen(request, timeout=8) as response:
+            return response.read().decode("utf-8")
+
+    def _handle_market_prices(self):
+        try:
+            gold = self._fetch_public_json("https://api.gold-api.com/price/XAU")
+            crypto = self._fetch_public_json(
+                "https://api.coingecko.com/api/v3/simple/price"
+                "?ids=bitcoin%2Cethereum&vs_currencies=usd"
+            )
+            ice_cotton = self._fetch_public_json(
+                "https://query1.finance.yahoo.com/v8/finance/chart/CT%3DF"
+                "?range=1d&interval=1m"
+            )
+            zce_cotton = self._fetch_public_text(
+                "https://hq.sinajs.cn/list=nf_CF0"
+            )
+            boc_rates = self._fetch_public_html(
+                "https://www.boc.cn/sourcedb/whpj/"
+            )
+            ice_result = ice_cotton["chart"]["result"][0]
+            ice_price = float(ice_result["meta"]["regularMarketPrice"])
+            cotton_quote = re.search(r'hq_str_nf_CF0="([^"]*)"', zce_cotton)
+            if cotton_quote is None:
+                raise ValueError("Public market API returned an invalid cotton quote")
+            cotton_fields = cotton_quote.group(1).split(",")
+            if len(cotton_fields) <= 6 or cotton_fields[0] != "棉花连续":
+                raise ValueError("Public market API returned an invalid cotton quote")
+            rate_parser = BankOfChinaRateParser()
+            rate_parser.feed(boc_rates)
+            if rate_parser.usd_cells is None or len(rate_parser.usd_cells) <= 3:
+                raise ValueError("Bank of China USD exchange rate was not found")
+            # Bank of China publishes exchange rates per 100 units of foreign currency.
+            usd_cny_spot_sell = round(float(rate_parser.usd_cells[3]) / 100, 4)
+            prices = {
+                "gold": float(gold["price"]),
+                "btc": float(crypto["bitcoin"]["usd"]),
+                "eth": float(crypto["ethereum"]["usd"]),
+                "ice_cotton": ice_price,
+                "zce_cotton": float(cotton_fields[6]),
+                "usd_cny": usd_cny_spot_sell,
+            }
+            if any(not math.isfinite(price) or price <= 0 for price in prices.values()):
+                raise ValueError("Public market API returned an invalid price")
+            import_cotton_before_tariff = (
+                (prices["zce_cotton"] - COTTON_CUSTOMS_COST_CNY)
+                / IMPORT_VAT_FACTOR
+                / prices["usd_cny"]
+                / US_CENTS_PER_METRIC_TON_CONVERSION
+                - COTTON_CLEARANCE_COST_US_CENTS
+            )
+            import_cotton_price = round(
+                import_cotton_before_tariff / NO_QUOTA_TARIFF_FACTOR,
+                2,
+            )
+            if not math.isfinite(import_cotton_price) or import_cotton_price <= 0:
+                raise ValueError("Calculated import cotton price is invalid")
+        except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError):
+            logging.exception("Could not retrieve public market prices")
+            self._send_error_json(
+                502,
+                "market_data_unavailable",
+                self._t("market.unavailable"),
+            )
+            return
+        self._send_json(
+            {
+                "currency": "USD",
+                "asset_currencies": {
+                    "ice_cotton": "US¢",
+                    "zce_cotton": "CNY",
+                    "usd_cny": "CNY",
+                },
+                "prices": prices,
+                "derived_prices": {"import_cotton": import_cotton_price},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    @staticmethod
+    def _market_candle(date, open_price, high, low, close):
+        try:
+            open_price, high, low, close = map(
+                float, (open_price, high, low, close)
+            )
+        except (TypeError, ValueError):
+            return None
+        prices = (open_price, high, low, close)
+        if (
+            not date
+            or any(not math.isfinite(price) or price <= 0 for price in prices)
+            or high < max(open_price, close)
+            or low > min(open_price, close)
+            or high < low
+        ):
+            return None
+        return {
+            "date": date,
+            "price": close,
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": close,
+        }
+
+    @classmethod
+    def _yahoo_history_points(cls, payload):
+        chart = payload["chart"]["result"][0]
+        quote = chart["indicators"]["quote"][0]
+        points = []
+        for timestamp, open_price, high, low, close in zip(
+            chart["timestamp"],
+            quote["open"],
+            quote["high"],
+            quote["low"],
+            quote["close"],
+        ):
+            date = datetime.fromtimestamp(
+                timestamp, timezone.utc
+            ).date().isoformat()
+            point = cls._market_candle(date, open_price, high, low, close)
+            if point:
+                points.append(point)
+        if not points:
+            raise ValueError("Historical prices were not returned")
+        return points
+
+    def _handle_market_history(self, asset):
+        assets = {"gold", "btc", "eth", "ice_cotton", "zce_cotton", "usd_cny"}
+        if asset not in assets:
+            self._send_error_json(
+                400,
+                "invalid_market_asset",
+                self._t("market.invalid_asset"),
+            )
+            return
+
+        try:
+            if asset == "zce_cotton":
+                response = self._fetch_public_text(
+                    "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
+                    "var%20_gvHistoryData/InnerFuturesNewService.getDailyKLine"
+                    "?symbol=CF0"
+                )
+                match = re.search(r"_gvHistoryData\((\[.*\])\)", response, re.S)
+                if match is None:
+                    raise ValueError("Historical cotton prices were not returned")
+                history = json.loads(match.group(1))
+                points = []
+                for item in history[-30:]:
+                    point = self._market_candle(
+                        item.get("d"),
+                        item.get("o"),
+                        item.get("h"),
+                        item.get("l"),
+                        item.get("c"),
+                    )
+                    if point:
+                        points.append(point)
+            else:
+                symbols = {
+                    "gold": "GC%3DF",
+                    "btc": "BTC-USD",
+                    "eth": "ETH-USD",
+                    "ice_cotton": "CT%3DF",
+                    "usd_cny": "CNY%3DX",
+                }
+                payload = self._fetch_public_json(
+                    "https://query1.finance.yahoo.com/v8/finance/chart/"
+                    f"{symbols[asset]}?range=1mo&interval=1d"
+                )
+                points = self._yahoo_history_points(payload)
+            if not points:
+                raise ValueError("Historical prices were not returned")
+        except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError, IndexError):
+            logging.exception("Could not retrieve market history for %s", asset)
+            self._send_error_json(
+                502,
+                "market_history_unavailable",
+                self._t("market.history_unavailable"),
+            )
+            return
+
+        currencies = {
+            "gold": "USD",
+            "btc": "USD",
+            "eth": "USD",
+            "ice_cotton": "US¢",
+            "zce_cotton": "CNY",
+            "usd_cny": "CNY",
+        }
+        self._send_json(
+            {
+                "asset": asset,
+                "currency": currencies[asset],
+                "prices": points,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
     def _handle_upload(self, user_id):
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -501,6 +938,61 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_ai_analysis(self, upload_id, user_id):
+        if not AI_API_KEY or not AI_MODEL:
+            self._send_error_json(
+                503,
+                "ai.not_configured",
+                self._t("ai.not_configured"),
+            )
+            return
+        try:
+            with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+                upload = connection.execute(
+                    """SELECT filename, content FROM uploads
+                       WHERE id = ? AND user_id = ?""",
+                    (upload_id, user_id),
+                ).fetchone()
+        except sqlite3.Error:
+            logging.exception("Could not read uploaded file for AI analysis")
+            self._send_error_json(
+                500,
+                "database_error",
+                self._t("request.database_read_error"),
+            )
+            return
+        if upload is None:
+            self._send_error_json(
+                404,
+                "file_not_found",
+                self._t("request.file_not_found"),
+            )
+            return
+
+        filename, file_bytes = upload
+        try:
+            messages = build_ai_messages(filename, bytes(file_bytes), self._locale())
+            analysis = request_ai_completion(messages)
+        except AIAnalysisInputError as error:
+            self._send_error_json(error.status, error.code, str(error))
+            return
+        except AIProviderError as error:
+            self._send_error_json(
+                error.status,
+                error.code,
+                self._t(error.code),
+            )
+            return
+        self._send_json(
+            {
+                "analysis": {
+                    "type": "ai",
+                    "text": analysis,
+                    "model": AI_MODEL,
+                }
+            }
+        )
+
     def do_OPTIONS(self):
         origin = self.headers.get("Origin")
         if origin and origin not in CORS_ORIGINS:
@@ -523,6 +1015,13 @@ class ApiHandler(BaseHTTPRequestHandler):
             requested_locale = parse_qs(parsed.query).get("locale", [""])[0]
             locale = get_locale(self.headers.get("Accept-Language", ""), requested_locale)
             self._send_json({"locale": locale, "messages": get_messages(locale)})
+            return
+        if parsed.path == "/api/market-prices":
+            self._handle_market_prices()
+            return
+        if parsed.path == "/api/market-history":
+            asset = parse_qs(parsed.query).get("asset", [""])[0]
+            self._handle_market_history(asset)
             return
         if parsed.path == "/api/session":
             try:
@@ -624,6 +1123,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/logout":
             self._handle_logout()
+            return
+        ai_analysis_upload_id = self._upload_id(
+            parsed.path,
+            "/ai-analysis",
+        )
+        if ai_analysis_upload_id is not None:
+            user = self._require_user()
+            if user is not None:
+                self._handle_ai_analysis(ai_analysis_upload_id, user[0])
             return
         if parsed.path != "/api/uploads":
             self._send_error_json(404, "not_found", self._t("request.page_not_found"))

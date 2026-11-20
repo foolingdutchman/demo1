@@ -7,6 +7,9 @@
 	<style>
 		* { box-sizing: border-box; }
 		body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
+		.page-nav { position: absolute; top: 16px; left: 24px; right: 24px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+		.back-link { display: inline-flex; align-items: center; min-height: 36px; padding: 0 12px; color: #087f70; background: #fff; border: 1px solid #dfe8e5; border-radius: 6px; font-size: 14px; text-decoration: none; }
+		.back-link:hover { background: #f1f5f4; }
 		main { width: min(440px, 100%); padding: 36px; background: #fff; border: 1px solid #dfe8e5; border-radius: 12px; box-shadow: 0 18px 48px #23304714; }
 		.eyebrow { margin: 0 0 10px; color: #087f70; font-size: 13px; font-weight: 700; }
 		h1 { margin: 0; font-size: 30px; }
@@ -22,13 +25,16 @@
 		input:focus { outline: 3px solid #087f7030; border-color: #087f70; }
 		#submit-button { width: 100%; }
 		.hint { margin: 12px 0 0; color: #68758a; font-size: 13px; line-height: 1.6; }
-		.language-switch { position: absolute; top: 16px; right: 24px; display: flex; gap: 10px; font-size: 14px; }
+		.language-switch { display: flex; gap: 10px; font-size: 14px; }
 		.language-switch button { min-height: auto; padding: 0; color: #087f70; background: transparent; font-weight: 400; }
 		@media (max-width: 640px) { main { padding: 24px; } }
 	</style>
 </head>
 <body data-page="login">
-	<div class="language-switch" id="language-switch"></div>
+	<nav class="page-nav" aria-label="Page navigation">
+		<a class="back-link" href="index.html" data-i18n="site.back_home"></a>
+		<div class="language-switch" id="language-switch"></div>
+	</nav>
 	<main>
 		<p class="eyebrow" data-i18n="auth.eyebrow"></p>
 		<h1 id="page-title"></h1>

@@ -77,6 +77,29 @@ def build_excel_analysis(file_bytes, locale="zh-CN"):
         raise ExcelAnalysisError(str(error)) from error
 
 
+def extract_excel_text(file_bytes):
+    try:
+        sheets = []
+        with pd.ExcelFile(BytesIO(file_bytes)) as workbook:
+            if not workbook.sheet_names:
+                raise ValueError("Workbook contains no worksheets")
+            for sheet_name in workbook.sheet_names:
+                data = pd.read_excel(workbook, sheet_name=sheet_name)
+                sheets.append(
+                    f"Sheet: {sheet_name}\n{data.to_csv(index=False, na_rep='')}"
+                )
+        return "\n\n".join(sheets)
+    except (
+        ImportError,
+        InvalidFileException,
+        OSError,
+        ValueError,
+        XLRDError,
+        zipfile.BadZipFile,
+    ) as error:
+        raise ExcelAnalysisError(str(error)) from error
+
+
 def run_streamlit_app():
     import streamlit as st
 

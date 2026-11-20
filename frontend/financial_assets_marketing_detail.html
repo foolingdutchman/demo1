@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>行情详情</title>
+	<style>
+		* { box-sizing: border-box; }
+		body { margin: 0; min-height: 100vh; padding: 24px; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
+		.top { width: min(1000px, 100%); margin: 0 auto 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+		.brand { color: #087f70; font-size: 20px; font-weight: 700; text-decoration: none; }
+		.top-actions { display: flex; align-items: center; gap: 16px; }
+		.back-link { color: #087f70; font-size: 14px; text-decoration: none; }
+		.back-link:hover { text-decoration: underline; }
+		.language-switch { display: flex; gap: 10px; font-size: 14px; }
+		.language-switch button { min-height: auto; padding: 0; color: #087f70; background: transparent; border: 0; font: inherit; cursor: pointer; }
+		main { width: min(1000px, 100%); margin: 0 auto; }
+		.card { padding: 32px; background: #fff; border: 1px solid #dfe8e5; border-radius: 14px; box-shadow: 0 18px 48px #23304714; }
+		.eyebrow { margin: 0 0 8px; color: #087f70; font-size: 13px; font-weight: 700; letter-spacing: .06em; }
+		h1 { margin: 0; font-size: clamp(26px, 5vw, 36px); overflow-wrap: anywhere; }
+		.price-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin: 20px 0 8px; }
+		.price-summary + .price-summary { margin: 8px 0 24px; }
+		.price-label { color: #68758a; font-size: 14px; }
+		.price-value { font-size: clamp(25px, 5vw, 36px); font-weight: 700; }
+		.price-date { color: #68758a; font-size: 14px; }
+		.derived-panel { margin: -4px 0 24px; padding: 18px; background: #f5f8f7; border: 1px solid #dfe8e5; border-radius: 10px; }
+		.derived-panel h2 { margin: 0 0 8px; font-size: 18px; }
+		.derived-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+		.derived-fields label { display: block; margin-bottom: 6px; color: #46546a; font-size: 13px; font-weight: 600; }
+		.derived-fields input { width: 100%; min-height: 42px; padding: 8px 10px; color: #233047; background: #fff; border: 1px solid #cbd6d3; border-radius: 7px; font: inherit; }
+		.derived-fields input[aria-invalid="true"] { border-color: #9c2f25; }
+		.derived-price { display: block; margin: 4px 0; color: #087f70; font-size: 26px; }
+		.derived-panel p { margin: 8px 0 0; color: #68758a; font-size: 13px; line-height: 1.7; }
+		.derived-panel .notice { color: #9c2f25; }
+		.chart-panel { padding: 22px; background: #fbfcfd; border: 1px solid #e7eceb; border-radius: 12px; }
+		.chart-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+		.chart-heading h2 { margin: 0; font-size: 20px; }
+		.chart-heading span, .chart-source, .updated { color: #68758a; font-size: 13px; line-height: 1.7; }
+		.chart-source { margin: 0 0 12px; }
+		.chart-legend { display: flex; gap: 16px; margin-bottom: 10px; color: #68758a; font-size: 13px; }
+		.chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+		.legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+		.legend-up { background: #d84a4a; }
+		.legend-down { background: #159a70; }
+		.chart-scroll { max-width: 100%; overflow-x: auto; }
+		.chart-scroll svg { display: block; width: 100%; min-width: 760px; height: auto; }
+		.chart-grid { stroke: #e7eceb; stroke-width: 1; }
+		.chart-axis-label { fill: #68758a; font: 11px "Microsoft YaHei", sans-serif; }
+		.candle-wick, .candle-body { stroke-width: 1.5; }
+		.candle-up { fill: #d84a4a; stroke: #d84a4a; }
+		.candle-down { fill: #159a70; stroke: #159a70; }
+		.candle-flat { fill: #68758a; stroke: #68758a; }
+		.status { margin: 14px 0 0; color: #68758a; font-size: 14px; }
+		.status:empty { display: none; }
+		.notice { color: #9c2f25; }
+		.updated { margin: 14px 0 0; }
+		footer { margin-top: 24px; color: #8792a4; font-size: 13px; text-align: center; }
+		@media (max-width: 560px) {
+			body { padding: 16px; }
+			.top { align-items: flex-start; }
+			.top-actions { align-items: flex-end; flex-direction: column-reverse; gap: 8px; }
+			.card { padding: 22px; }
+			.chart-panel { padding: 16px; }
+			.chart-heading { align-items: flex-start; flex-direction: column; }
+			.derived-fields { grid-template-columns: 1fr; }
+		}
+	</style>
+</head>
+<body data-page="market-detail">
+	<header class="top">
+		<a class="brand" id="market-detail-brand" href="assets.html" data-i18n="site.title"></a>
+		<nav class="top-actions" aria-label="Page navigation">
+			<a class="back-link" id="market-detail-back" href="index.html" data-i18n="market.detail_back"></a>
+			<div class="language-switch" id="language-switch"></div>
+		</nav>
+	</header>
+	<main>
+		<section class="card">
+			<p class="eyebrow" data-i18n="market.detail_eyebrow"></p>
+			<h1 id="market-detail-title"></h1>
+			<div class="price-summary">
+				<span class="price-label" data-i18n="market.current_price"></span>
+				<strong class="price-value" id="market-current-price" data-i18n="market.loading"></strong>
+				<span class="price-date" id="market-current-updated"></span>
+				<span class="price-date" id="market-detail-unit"></span>
+			</div>
+			<p class="status notice" id="market-current-status" role="status"></p>
+			<div class="price-summary">
+				<span class="price-label" data-i18n="market.history_latest"></span>
+				<strong class="price-value" id="market-history-latest" data-i18n="market.loading"></strong>
+				<span class="price-date" id="market-history-date"></span>
+			</div>
+			<section class="derived-panel" id="market-import-cotton-panel" hidden aria-labelledby="market-import-cotton-heading">
+				<h2 id="market-import-cotton-heading" data-i18n="market.import_cotton_price"></h2>
+				<div class="derived-fields">
+					<div>
+						<label for="market-import-customs-cost" data-i18n="market.import_customs_cost_label"></label>
+						<input id="market-import-customs-cost" type="number" min="0" step="any" value="100" inputmode="decimal" required>
+					</div>
+					<div>
+						<label for="market-import-clearance-fee" data-i18n="market.import_clearance_fee_label"></label>
+						<input id="market-import-clearance-fee" type="number" min="0" step="any" value="1.5" inputmode="decimal" required>
+					</div>
+					<div>
+						<label for="market-import-tariff-amount" data-i18n="market.import_tariff_amount_label"></label>
+						<input id="market-import-tariff-amount" type="number" min="0" step="any" value="3800" inputmode="decimal" required>
+					</div>
+				</div>
+				<strong class="derived-price" id="market-import-cotton-price" data-i18n="market.loading"></strong>
+				<p data-i18n="market.import_cotton_unit"></p>
+				<p data-i18n="market.import_cotton_formula"></p>
+				<p class="notice" id="market-import-cotton-status" role="status"></p>
+			</section>
+			<section class="chart-panel" aria-labelledby="market-history-heading">
+				<div class="chart-heading">
+					<h2 id="market-history-heading" data-i18n="market.history_title"></h2>
+					<span data-i18n="market.history_period"></span>
+				</div>
+				<p class="chart-source" id="market-history-source"></p>
+				<div class="chart-legend">
+					<span><i class="legend-swatch legend-up"></i><span data-i18n="market.candle_rising"></span></span>
+					<span><i class="legend-swatch legend-down"></i><span data-i18n="market.candle_falling"></span></span>
+				</div>
+				<div class="chart-scroll" id="market-history-chart" aria-live="polite"></div>
+				<p class="status notice" id="market-detail-status" role="alert"></p>
+			</section>
+			<p class="updated" id="market-detail-updated"></p>
+			<p class="notice" id="notice" role="alert"></p>
+		</section>
+	</main>
+	<footer data-i18n="site.footer"></footer>
+	<script src="api-config.js"></script>
+	<script src="client.js"></script>
+	<script src="app.js"></script>
+</body>
+</html>

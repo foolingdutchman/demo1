@@ -33,10 +33,27 @@ All application data endpoints return JSON. Errors use the shape `{"error":{"cod
 - `POST /api/logout`
 - `GET /api/uploads`, `POST /api/uploads` with multipart field `file`
 - `GET /api/uploads/{id}` and `GET /api/uploads/{id}?analyze=1`
+- `POST /api/uploads/{id}/ai-analysis` to analyze an uploaded file with the configured model API
 - `DELETE /api/uploads/{id}`
 - `GET /api/uploads/{id}/content` for previewable file content; add `?download=1` to download
 
 The content endpoint returns the file bytes rather than JSON so browsers can display or download the original file.
+
+## AI file analysis
+
+The file details page keeps its local analysis button and provides a separate AI analysis action. The AI action sends extracted text, PDF text, Excel worksheet data, or supported image data to the configured OpenAI-compatible chat-completions API. The result is not persisted by the application. Scanned PDFs are not OCR-processed. Images must use JPEG, PNG, GIF, or WebP; the configured model must support vision input.
+
+Configure the API key and model in the environment of the process that starts `web-python.py`; never put credentials in frontend files or commit them:
+
+```powershell
+$env:AI_API_BASE_URL = "https://api.openai.com/v1"
+$env:AI_MODEL = "<provider model name>"
+# Set AI_API_KEY using your secret-management or process-environment mechanism.
+$env:AI_MAX_INPUT_CHARS = "60000"
+python web-python.py
+```
+
+`AI_API_BASE_URL` defaults to the OpenAI API root. Remote endpoints must use HTTPS. The default extracted-text limit is 60,000 characters; larger documents are rejected rather than silently truncated. `AI_API_TIMEOUT_SECONDS` defaults to 60.
 
 Run the API integration tests with:
 
