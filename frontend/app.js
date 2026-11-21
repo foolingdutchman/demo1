@@ -10,6 +10,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 			await initLoginPage();
 		} else if (page === "assets") {
 			await initAssetsPage();
+		} else if (page === "list") {
+			await initListPage();
 		} else if (page === "detail") {
 			await initDetailPage();
 		}
@@ -19,6 +21,42 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 let importCottonMarketPrices = null;
+const IMPORT_COTTON_DEFAULTS = {
+	customsCost: 100,
+	clearanceFee: 1.5,
+	tariffAmountCny: 3800,
+};
+const COTTON_QUOTATION_TABLES = [
+	{
+		key: "quotation_summary",
+		title: "market.cotton_summary",
+		columns: [
+			"image_label",
+			"batch_number",
+			"processor",
+			"origin",
+			"package_count",
+			"gross_weight_tons",
+			"tare_weight_kg",
+			"net_weight_tons",
+			"standard_weight_tons",
+			"moisture_percent",
+			"impurity_percent",
+			"micronaire",
+			"length_mm",
+			"uniformity_percent",
+			"color_grade",
+			"strength_average",
+			"strength_min",
+			"strength_max",
+			"gross_price_cny_per_ton",
+			"basis_cny_per_ton",
+			"red_note",
+			"source_filename",
+			"source_sheet_name",
+		],
+	},
+];
 
 async function initMarketBoard() {
 	const refreshButton = document.getElementById("market-refresh");
@@ -57,6 +95,13 @@ async function initMarketDetailPage() {
 	);
 	if (asset === "zce_cotton") {
 		document.getElementById("market-import-cotton-panel").hidden = false;
+		loadCottonQuotations();
+		document.getElementById("market-import-customs-cost").value =
+			String(IMPORT_COTTON_DEFAULTS.customsCost);
+		document.getElementById("market-import-clearance-fee").value =
+			String(IMPORT_COTTON_DEFAULTS.clearanceFee);
+		document.getElementById("market-import-tariff-amount").value =
+			String(IMPORT_COTTON_DEFAULTS.tariffAmountCny);
 		for (const id of [
 			"market-import-customs-cost",
 			"market-import-clearance-fee",
@@ -100,6 +145,50 @@ async function initMarketDetailPage() {
 			"market.unavailable_short",
 		);
 		document.getElementById("market-detail-status").textContent = error.message;
+	}
+}
+
+async function loadCottonQuotations() {
+	const status = document.getElementById("cotton-quotation-status");
+	const container = document.getElementById("cotton-quotation-tables");
+	container.replaceChildren();
+	status.textContent = "";
+	try {
+		const session = await App.api("/api/session");
+		if (!session.authenticated) return;
+		document.getElementById("cotton-quotation-panel").hidden = false;
+		const result = await App.api("/api/cotton-quotations");
+		if (!result.sheets || COTTON_QUOTATION_TABLES.some(
+			({ key }) => !Array.isArray(result.sheets[key]),
+		)) {
+			throw new Error(App.t("market.cotton_data_unavailable"));
+		}
+		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+			maximumFractionDigits: 3,
+		});
+		let hasRecords = false;
+		for (const sheet of COTTON_QUOTATION_TABLES) {
+			const records = result.sheets[sheet.key];
+			if (records.length === 0) continue;
+			hasRecords = true;
+			const heading = document.createElement("h3");
+			heading.textContent = App.t(sheet.title);
+			container.append(heading);
+			const headers = sheet.columns.map((column) =>
+				App.t(`market.cotton_column.${column}`),
+			);
+			const rows = records.map((record) => sheet.columns.map((column) => {
+				const value = record[column];
+				return typeof value === "number" ? formatter.format(value) : value ?? "";
+			}));
+			appendTable(container, headers, rows);
+		}
+		if (!hasRecords) {
+			status.textContent = App.t("market.cotton_data_empty");
+		}
+	} catch (error) {
+		document.getElementById("cotton-quotation-panel").hidden = false;
+		status.textContent = error.message || App.t("market.cotton_data_unavailable");
 	}
 }
 
@@ -176,14 +265,12 @@ function updateImportCottonPrice() {
 		return;
 	}
 
-	const [customsCost, clearanceFee, tariffAmountCny] = parameters;
-	const price = (
-		(prices.zce_cotton - customsCost) / 1.09
-		/ prices.usd_cny / 22.0462
-		- tariffAmountCny / prices.usd_cny / 22.0462
-		- clearanceFee
-	);
-	if (!Number.isFinite(price) || price <= 0) {
+	const price = calculateImportCottonPrice(prices, {
+		customsCost: parameters[0],
+		clearanceFee: parameters[1],
+		tariffAmountCny: parameters[2],
+	});
+	if (price === null) {
 		value.textContent = "—";
 		status.textContent = App.t("market.import_cotton_nonpositive_result");
 		return;
@@ -195,6 +282,24 @@ function updateImportCottonPrice() {
 	});
 	value.textContent = `US¢ ${formatter.format(price)}`;
 	status.textContent = "";
+}
+
+function calculateImportCottonPrice(prices, {
+	customsCost,
+	clearanceFee,
+	tariffAmountCny,
+}) {
+	if (!prices || !Number.isFinite(prices.zce_cotton)
+		|| !Number.isFinite(prices.usd_cny) || prices.usd_cny <= 0) {
+		return null;
+	}
+	const price = (
+		(prices.zce_cotton - customsCost) / 1.09
+		/ prices.usd_cny / 22.0462
+		- tariffAmountCny / prices.usd_cny / 22.0462
+		- clearanceFee
+	);
+	return Number.isFinite(price) && price > 0 ? price : null;
 }
 
 function renderMarketCandlestickChart(points, currency, formatter, assetName) {
@@ -329,7 +434,10 @@ async function loadMarketPrices() {
 				: formatter;
 			if (value) value.textContent = `${currency} ${priceFormatter.format(price)}`;
 		}
-		const importCottonPrice = result.derived_prices && result.derived_prices.import_cotton;
+		const importCottonPrice = calculateImportCottonPrice(
+			result.prices,
+			IMPORT_COTTON_DEFAULTS,
+		);
 		if (!Number.isFinite(importCottonPrice)) {
 			throw new Error(App.t("market.import_cotton_unavailable"));
 		}
@@ -422,7 +530,7 @@ async function initLoginPage() {
 				}),
 			});
 			const next = query.get("next") || "assets.html";
-			const safeNext = /^(assets\.html|detail\.html\?id=\d+)$/.test(next)
+			const safeNext = /^(assets\.html|list\.html|detail\.html\?id=\d+)$/.test(next)
 				? next
 				: "assets.html";
 			window.location.href = safeNext;
@@ -434,30 +542,8 @@ async function initLoginPage() {
 }
 
 async function initAssetsPage() {
-	let session;
-	try {
-		session = await App.api("/api/session");
-	} catch (error) {
-		App.setNotice(error.message);
-		return;
-	}
-	if (!session.authenticated) {
-		goToLogin("assets.html");
-		return;
-	}
+	if (!await initAuthenticatedPage("assets.html")) return;
 	initMarketBoard();
-	document.getElementById("username").textContent = App.t("site.logged_in", {
-		username: session.user.username,
-	});
-
-	document.getElementById("logout-button").addEventListener("click", async () => {
-		try {
-			await App.api("/api/logout", { method: "POST" });
-			window.location.href = "index.html";
-		} catch (error) {
-			App.setNotice(error.message);
-		}
-	});
 
 	document.getElementById("upload-form").addEventListener("submit", async (event) => {
 		event.preventDefault();
@@ -473,15 +559,50 @@ async function initAssetsPage() {
 			handleUnauthorized(error, "assets.html");
 		}
 	});
-	await loadUploadList();
+	await loadUploadList(5, "assets.html");
 }
 
-async function loadUploadList() {
+async function initListPage() {
+	if (!await initAuthenticatedPage("list.html")) return;
+	document.title = `${App.t("list.title")} - ${App.t("site.title")}`;
+	await loadUploadList(null, "list.html");
+}
+
+async function initAuthenticatedPage(nextPage) {
+	let session;
+	try {
+		session = await App.api("/api/session");
+	} catch (error) {
+		App.setNotice(error.message);
+		return false;
+	}
+	if (!session.authenticated) {
+		goToLogin(nextPage);
+		return false;
+	}
+	document.getElementById("username").textContent = App.t("site.logged_in", {
+		username: session.user.username,
+	});
+	document.getElementById("logout-button").addEventListener("click", async () => {
+		try {
+			await App.api("/api/logout", { method: "POST" });
+			window.location.href = "index.html";
+		} catch (error) {
+			App.setNotice(error.message);
+		}
+	});
+	return true;
+}
+
+async function loadUploadList(limit = null, nextPage = "assets.html") {
 	const container = document.getElementById("upload-list");
 	container.replaceChildren();
 	try {
 		const result = await App.api("/api/uploads");
-		if (result.uploads.length === 0) {
+		const uploads = limit === null
+			? result.uploads
+			: result.uploads.slice(0, limit);
+		if (uploads.length === 0) {
 			const empty = document.createElement("p");
 			empty.className = "empty";
 			empty.textContent = App.t("site.empty_uploads");
@@ -505,7 +626,7 @@ async function loadUploadList() {
 		});
 		head.append(headerRow);
 		const body = document.createElement("tbody");
-		for (const upload of result.uploads) {
+		for (const upload of uploads) {
 			const row = document.createElement("tr");
 			const nameCell = document.createElement("td");
 			const link = document.createElement("a");
@@ -529,9 +650,9 @@ async function loadUploadList() {
 				if (!window.confirm(App.t("site.confirm_delete"))) return;
 				try {
 					await App.api(`/api/uploads/${upload.id}`, { method: "DELETE" });
-					await loadUploadList();
+					await loadUploadList(limit, nextPage);
 				} catch (error) {
-					handleUnauthorized(error, "assets.html");
+					handleUnauthorized(error, nextPage);
 				}
 			});
 			actionCell.append(deleteButton);
@@ -542,7 +663,7 @@ async function loadUploadList() {
 		wrapper.append(table);
 		container.append(wrapper);
 	} catch (error) {
-		handleUnauthorized(error, "assets.html");
+		handleUnauthorized(error, nextPage);
 	}
 }
 
@@ -565,6 +686,9 @@ async function initDetailPage() {
 		try {
 			const result = await App.api(`/api/uploads/${id}?analyze=1`);
 			renderAnalysis(result.analysis);
+			if (result.cotton_quotation_import) {
+				renderCottonQuotationImport(result.cotton_quotation_import);
+			}
 		} catch (error) {
 			handleUnauthorized(error, `detail.html?id=${id}`);
 		}
@@ -646,6 +770,10 @@ function renderDetail(result) {
 	}
 	renderPreview(result.preview);
 	if (result.analysis) renderAnalysis(result.analysis);
+	if (result.ai_analysis) {
+		document.getElementById("ai-analysis").hidden = false;
+		renderAiAnalysis(result.ai_analysis);
+	}
 }
 
 async function renderPreview(preview) {
@@ -826,6 +954,28 @@ function renderAnalysis(analysis) {
 		message.textContent = analysis.message;
 		container.append(message);
 	}
+}
+
+function renderCottonQuotationImport(importResult) {
+	const container = document.getElementById("analysis");
+	const status = document.createElement("p");
+	status.className = "status";
+	status.setAttribute("role", "status");
+	if (importResult.already_imported) {
+		status.textContent = App.t("analysis.cotton_already_imported", {
+			count: importResult.rows_found,
+		});
+	} else if (importResult.rows_inserted > 0) {
+		status.textContent = App.t("analysis.cotton_imported", {
+			count: importResult.rows_inserted,
+		});
+	} else {
+		status.textContent = App.t("analysis.cotton_import_empty");
+	}
+	const link = document.createElement("a");
+	link.href = "financial_assets_marketing_detail.html?asset=zce_cotton&return=assets";
+	link.textContent = App.t("analysis.cotton_view");
+	container.prepend(status, link);
 }
 
 function renderAiAnalysis(analysis) {

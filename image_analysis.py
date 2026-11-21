@@ -14,6 +14,19 @@ IMAGE_MIME_TYPES = {
 IMAGE_EXTENSIONS = set(IMAGE_MIME_TYPES)
 
 
+def build_image_preview(upload_id: int) -> dict[str, str]:
+	return {"type": "image", "url": f"/api/uploads/{upload_id}/content"}
+
+
+def build_image_analysis(locale: str) -> dict[str, str]:
+	from i18n import translate
+
+	return {
+		"type": "image",
+		"message": translate(locale, "analysis.image_pending"),
+	}
+
+
 def is_image_file(uploaded_file: Any) -> bool:
 	"""Check whether an uploaded file is a supported image format."""
 	if isinstance(uploaded_file, (str, Path)):

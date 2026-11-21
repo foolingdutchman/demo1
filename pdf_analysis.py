@@ -6,6 +6,9 @@ from io import BytesIO
 from i18n import translate
 
 
+PDF_EXTENSIONS = {".pdf"}
+
+
 class PdfAnalysisError(Exception):
     pass
 

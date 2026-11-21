@@ -14,9 +14,9 @@
 		button { min-height: 40px; padding: 8px 14px; color: #fff; background: #536dfe; border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
 		button:hover { background: #4058e8; }
 		.language-switch button { min-height: 34px; padding: 5px 10px; color: #087f70; background: #f1f5f4; border: 1px solid #dfe8e5; }
-		main { max-width: 760px; margin: 8vh auto; padding: 24px; text-align: center; }
+		main { max-width: 760px; margin: 3vh auto; padding: 24px; text-align: center; }
 		.card, .records { background: #fff; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; }
-		.card { padding: 48px 28px; }
+		.card { margin-top: 20px; padding: 48px 28px; }
 		.records { margin-top: 20px; padding: 24px; text-align: left; }
 		h1 { margin: 0 0 14px; font-size: clamp(32px, 7vw, 52px); }
 		p { color: #68758a; line-height: 1.8; }
@@ -32,7 +32,8 @@
 		.empty { color: #68758a; }
 		.notice { margin: 14px 0; color: #9c2f25; }
 		.notice:empty { display: none; }
-		.market { margin-top: 20px; padding: 24px; background: #fff; border: 1px solid #e7eceb; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; text-align: left; }
+		.view-all { display: inline-flex; margin-top: 16px; padding: 10px 16px; color: #fff; background: #536dfe; border-radius: 7px; font-weight: 700; text-decoration: none; }
+		.market { margin-top: 0; padding: 24px; background: #fff; border: 1px solid #e7eceb; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; text-align: left; }
 		.market-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
 		.market-heading h2 { margin: 0 0 6px; font-size: 20px; }
 		.market-heading p, .market-updated { margin: 0; color: #68758a; font-size: 14px; }
@@ -50,7 +51,7 @@
 		footer { margin-top: 28px; color: #8792a4; font-size: 14px; }
 		@media (max-width: 640px) {
 			header { align-items: flex-start; flex-direction: column; }
-			main { margin: 4vh auto; }
+			main { margin: 2vh auto; }
 			.market-prices { grid-template-columns: 1fr; }
 			.market-heading { flex-direction: column; }
 		}
@@ -66,15 +67,6 @@
 		</div>
 	</header>
 	<main>
-		<section class="card">
-			<h1 data-i18n="site.greeting"></h1>
-			<p><span data-i18n="site.welcome"></span><br><span data-i18n="site.wish"></span></p>
-			<form class="upload-form" id="upload-form">
-				<input id="upload-file" type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.txt,.md,.xls,.xlsx,.csv,.log,.json" required>
-				<button type="submit" data-i18n="site.upload"></button>
-			</form>
-			<p class="notice" id="notice" role="alert"></p>
-		</section>
 		<section class="market" aria-labelledby="market-title">
 			<div class="market-heading">
 				<div>
@@ -123,9 +115,19 @@
 			<p class="market-status" id="market-status" role="status"></p>
 			<p class="market-updated" id="market-updated"></p>
 		</section>
+		<section class="card">
+			<h1 data-i18n="site.upload_title"></h1>
+			<p data-i18n="site.upload_hint"></p>
+			<form class="upload-form" id="upload-form">
+				<input id="upload-file" type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.txt,.md,.xls,.xlsx,.csv,.log,.json" required>
+				<button type="submit" data-i18n="site.upload"></button>
+			</form>
+			<p class="notice" id="notice" role="alert"></p>
+		</section>
 		<section class="records">
 			<h2 data-i18n="site.my_uploads"></h2>
 			<div id="upload-list"></div>
+			<a class="view-all" href="list.html" data-i18n="site.view_all"></a>
 		</section>
 		<footer data-i18n="site.footer"></footer>
 	</main>

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>上传文件列表</title>
+	<style>
+		* { box-sizing: border-box; }
+		body { margin: 0; min-height: 100vh; color: #233047; background: linear-gradient(135deg, #e8f4ff, #f8f2ff); font-family: "Microsoft YaHei", sans-serif; }
+		header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 8%; background: #fff; box-shadow: 0 2px 12px #24344a12; }
+		.brand { color: #536dfe; font-size: 20px; font-weight: 700; text-decoration: none; }
+		.account { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; color: #68758a; font-size: 14px; }
+		.account a { color: #087f70; text-decoration: none; }
+		button { min-height: 40px; padding: 8px 14px; color: #fff; background: #536dfe; border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
+		.language-switch { display: flex; gap: 8px; }
+		.language-switch button { min-height: 34px; padding: 5px 10px; color: #087f70; background: #f1f5f4; border: 1px solid #dfe8e5; }
+		main { width: min(1000px, 100%); margin: 6vh auto; padding: 0 24px; }
+		.records { padding: 28px; background: #fff; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; }
+		h1 { margin: 0 0 20px; font-size: clamp(24px, 5vw, 34px); }
+		.table-wrap { max-width: 100%; overflow-x: auto; }
+		table { width: 100%; border-collapse: collapse; text-align: left; }
+		th, td { padding: 12px 10px; border-bottom: 1px solid #e7eceb; font-size: 14px; }
+		th { color: #68758a; font-size: 13px; }
+		td:first-child { overflow-wrap: anywhere; }
+		td a { color: #087f70; font-weight: 600; }
+		.delete-button { color: #a33b31; background: #fff0ed; border: 1px solid #f1c8c2; }
+		.empty { color: #68758a; }
+		.notice { color: #9c2f25; }
+		.notice:empty { display: none; }
+		footer { margin-top: 28px; color: #8792a4; font-size: 14px; text-align: center; }
+		@media (max-width: 640px) {
+			header { align-items: flex-start; flex-direction: column; }
+			main { margin: 4vh auto; }
+			.records { padding: 20px; }
+		}
+	</style>
+</head>
+<body data-page="list">
+	<header>
+		<a class="brand" href="assets.html" data-i18n="site.title"></a>
+		<div class="account">
+			<span id="username"></span>
+			<a href="assets.html" data-i18n="list.back"></a>
+			<button id="logout-button" type="button" data-i18n="site.logout"></button>
+			<div class="language-switch" id="language-switch"></div>
+		</div>
+	</header>
+	<main>
+		<section class="records" aria-labelledby="list-title">
+			<h1 id="list-title" data-i18n="list.title"></h1>
+			<p class="notice" id="notice" role="alert"></p>
+			<div id="upload-list"></div>
+		</section>
+		<footer data-i18n="site.footer"></footer>
+	</main>
+	<script src="api-config.js"></script>
+	<script src="client.js"></script>
+	<script src="app.js"></script>
+</body>
+</html>

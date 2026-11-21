@@ -1,8 +1,10 @@
 import io
 import json
+from contextlib import closing
 from http.cookiejar import CookieJar
 from http.server import HTTPServer
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -10,27 +12,267 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 from unittest.mock import patch
 
+import ai_analysis
 import api_server
+import db_manager
+import excel_analysis
 import pandas as pd
+from openpyxl import Workbook
 
 
 class ApiIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.original_database_path = api_server.DATABASE_PATH
-        api_server.DATABASE_PATH = Path(self.temp_dir.name) / "test.db"
-        api_server.initialize_database()
+        self.original_database_path = db_manager.DATABASE_PATH
+        db_manager.DATABASE_PATH = Path(self.temp_dir.name) / "test.db"
+        db_manager.initialize_database()
         self.server = HTTPServer(("127.0.0.1", 0), api_server.ApiHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
         self.opener = build_opener(HTTPCookieProcessor(CookieJar()))
 
+    def test_local_environment_file_loads_without_overriding_process_values(self):
+        env_path = Path(self.temp_dir.name) / ".env"
+        env_path.write_text(
+            "AI_API_KEY=local-key\nAI_MODEL='local-model'\n",
+            encoding="utf-8",
+        )
+        with patch.object(api_server, "LOCAL_ENV_PATH", env_path), patch.dict(
+            api_server.os.environ,
+            {"AI_API_KEY": "process-key"},
+        ):
+            api_server.os.environ.pop("AI_MODEL", None)
+            api_server.load_local_environment()
+
+            self.assertEqual(api_server.os.environ["AI_API_KEY"], "process-key")
+            self.assertEqual(api_server.os.environ["AI_MODEL"], "local-model")
+
+    def test_database_initialization_migrates_existing_upload_table(self):
+        legacy_database = Path(self.temp_dir.name) / "legacy.db"
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
+            connection.execute(
+                """CREATE TABLE uploads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    filename TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    content BLOB NOT NULL
+                )"""
+            )
+
+        with patch.object(db_manager, "DATABASE_PATH", legacy_database):
+            db_manager.initialize_database()
+
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(uploads)")
+            }
+        self.assertTrue(
+            {"ai_analysis", "ai_model", "ai_analyzed_at"}.issubset(columns)
+        )
+
+    def test_cotton_quotation_workbook_is_imported_once_for_authenticated_users(self):
+        workbook_path = Path(self.temp_dir.name) / "cotton_quotation.xlsx"
+        workbook = Workbook()
+        row_values = {
+            "image_label": "图1",
+            "batch_number": "000123",
+            "processor": "测试棉业",
+            "origin": "新疆",
+            "gross_price_cny_per_ton": 17700,
+            "basis_cny_per_ton": 840,
+            "strength_average": 31.2,
+        }
+        for index, sheet_config in enumerate(excel_analysis.COTTON_QUOTATION_SHEETS):
+            worksheet = workbook.active if index == 0 else workbook.create_sheet()
+            worksheet.title = sheet_config["worksheet"]
+            worksheet.append(
+                [header for _column, header, _column_type in sheet_config["columns"]]
+            )
+            worksheet.append(
+                [
+                    row_values.get(column)
+                    for column, _header, _column_type in sheet_config["columns"]
+                ]
+            )
+        workbook.save(workbook_path)
+        workbook.close()
+
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            connection.execute("DELETE FROM cotton_quotation_summary")
+            connection.execute("CREATE TABLE cotton_quotation_prices (id INTEGER)")
+            connection.execute("CREATE TABLE cotton_quotation_strength (id INTEGER)")
+
+        with patch.object(db_manager, "COTTON_QUOTATION_PATH", workbook_path):
+            db_manager.initialize_database()
+
+        with patch.object(
+            db_manager,
+            "load_workbook",
+            side_effect=AssertionError("populated summary should not be re-imported"),
+        ):
+            db_manager.initialize_database()
+
+        unauthorized = self.request("/api/cotton-quotations")
+        self.assertEqual(unauthorized.code, 401)
+        self.assertEqual(self.register().code, 201)
+        response = self.request("/api/cotton-quotations")
+        self.assertEqual(response.code, 200)
+        sheets = json.loads(response.read())["sheets"]
+        self.assertEqual(set(sheets), {"quotation_summary"})
+        self.assertEqual(len(sheets["quotation_summary"]), 1)
+        self.assertEqual(sheets["quotation_summary"][0]["batch_number"], "000123")
+        self.assertEqual(sheets["quotation_summary"][0]["gross_price_cny_per_ton"], 17700)
+        self.assertEqual(
+            sheets["quotation_summary"][0]["source_filename"],
+            workbook_path.name,
+        )
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name LIKE 'cotton_quotation_%'"
+                )
+            }
+        self.assertEqual(tables, {"cotton_quotation_summary"})
+
+    def test_analyzing_cotton_excel_imports_rows_idempotently(self):
+        self.assertEqual(self.request("/api/cotton-quotations").code, 401)
+        self.assertEqual(self.register().code, 201)
+        workbook = io.BytesIO()
+        pd.DataFrame(
+            {
+                "批号": ["000200", "000201"],
+                "加工单位": ["测试棉业甲", "测试棉业乙"],
+                "产地": ["新疆", "新疆"],
+                "毛重单价(元/吨)": [17700, None],
+                "基差(元/吨)": [None, 840],
+                "马克隆值": [4.5, 4.7],
+            }
+        ).to_excel(workbook, index=False, sheet_name="本次报价", startrow=1)
+        upload_response = self.upload(
+            "cotton_upload.xlsx",
+            workbook.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        upload_id = json.loads(upload_response.read())["upload"]["id"]
+
+        response = self.request(f"/api/uploads/{upload_id}?analyze=1")
+        self.assertEqual(response.code, 200)
+        result = json.loads(response.read())
+        self.assertEqual(result["analysis"]["type"], "excel")
+        self.assertEqual(
+            result["cotton_quotation_import"],
+            {
+                "rows_found": 2,
+                "rows_inserted": 2,
+                "already_imported": False,
+            },
+        )
+
+        repeated = self.request(f"/api/uploads/{upload_id}?analyze=1")
+        self.assertEqual(repeated.code, 200)
+        self.assertEqual(
+            json.loads(repeated.read())["cotton_quotation_import"],
+            {
+                "rows_found": 2,
+                "rows_inserted": 0,
+                "already_imported": True,
+            },
+        )
+        quotations = json.loads(self.request("/api/cotton-quotations").read())
+        imported_rows = quotations["sheets"]["quotation_summary"]
+        self.assertEqual(
+            [row["batch_number"] for row in imported_rows if row["source_filename"] == "cotton_upload.xlsx"],
+            ["000200", "000201"],
+        )
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM cotton_quotation_summary "
+                "WHERE source_upload_id = ?",
+                (upload_id,),
+            ).fetchone()[0]
+        self.assertEqual(count, 2)
+
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+        second_user = {
+            "mode": "register",
+            "username": "api_test_user_two",
+            "password": "SecretPass123",
+            "confirm_password": "SecretPass123",
+        }
+        self.assertEqual(
+            self.request(
+                "/api/auth",
+                "POST",
+                json.dumps(second_user).encode(),
+                {"Content-Type": "application/json"},
+            ).code,
+            201,
+        )
+        second_user_data = json.loads(
+            self.request("/api/cotton-quotations").read()
+        )["sheets"]["quotation_summary"]
+        self.assertEqual(
+            [row["batch_number"] for row in second_user_data if row["source_filename"] == "cotton_upload.xlsx"],
+            ["000200", "000201"],
+        )
+
+    def test_analyzing_luidao_fuzhong_cotton_headers_imports_rows(self):
+        self.assertEqual(self.register().code, 201)
+        workbook = io.BytesIO()
+        pd.DataFrame(
+            {
+                "基差": [840],
+                "产地（中文）": ["新疆"],
+                "轧花厂": ["测试轧花厂"],
+                "批号": ["000300"],
+                "公重": [12.3],
+                "毛重": [12.8],
+                "包数": [50],
+                "长度": [29],
+                "颜色级": ["白棉1级"],
+                "马克隆": [4.5],
+                "整齐度": [82],
+            }
+        ).to_excel(workbook, index=False, sheet_name="报价")
+        upload_response = self.upload(
+            "路易达孚国产棉报价 11-03 external.xlsx",
+            workbook.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        upload_id = json.loads(upload_response.read())["upload"]["id"]
+
+        response = self.request(f"/api/uploads/{upload_id}?analyze=1")
+        self.assertEqual(response.code, 200)
+        result = json.loads(response.read())
+        self.assertEqual(
+            result["cotton_quotation_import"],
+            {
+                "rows_found": 1,
+                "rows_inserted": 1,
+                "already_imported": False,
+            },
+        )
+        quotations = json.loads(self.request("/api/cotton-quotations").read())
+        imported = next(
+            row
+            for row in quotations["sheets"]["quotation_summary"]
+            if row["source_filename"] == "路易达孚国产棉报价 11-03 external.xlsx"
+        )
+        self.assertEqual(imported["batch_number"], "000300")
+        self.assertEqual(imported["processor"], "测试轧花厂")
+        self.assertEqual(imported["origin"], "新疆")
+
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
-        api_server.DATABASE_PATH = self.original_database_path
+        db_manager.DATABASE_PATH = self.original_database_path
         self.temp_dir.cleanup()
 
     def request(self, path, method="GET", body=None, headers=None):
@@ -62,6 +304,37 @@ class ApiIntegrationTests(unittest.TestCase):
             ).encode(),
             {"Content-Type": "application/json"},
         )
+
+    def test_auth_manager_preserves_login_and_logout_api_behavior(self):
+        self.assertEqual(self.register().code, 201)
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+
+        credentials = {
+            "mode": "login",
+            "username": "api_test_user",
+            "password": "SecretPass123",
+        }
+        invalid_login = self.request(
+            "/api/auth",
+            "POST",
+            json.dumps({**credentials, "password": "WrongPass123"}).encode(),
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(invalid_login.code, 401)
+        self.assertEqual(
+            json.loads(invalid_login.read())["error"]["code"],
+            "invalid_credentials",
+        )
+
+        login = self.request(
+            "/api/auth",
+            "POST",
+            json.dumps(credentials).encode(),
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(login.code, 200)
+        self.assertEqual(json.loads(login.read())["user"]["username"], "api_test_user")
+        self.assertTrue(json.loads(self.request("/api/session").read())["authenticated"])
 
     def upload(self, filename, content, content_type):
         boundary = "----test-boundary"
@@ -98,18 +371,18 @@ class ApiIntegrationTests(unittest.TestCase):
             }
 
         with patch.object(
-            api_server.ApiHandler, "_fetch_public_json", side_effect=fake_public_json
+            api_server.outcall_api, "fetch_public_json", side_effect=fake_public_json
         ) as fetch, patch.object(
-            api_server.ApiHandler,
-            "_fetch_public_text",
+            api_server.outcall_api,
+            "fetch_public_text",
             return_value=(
                 'var hq_str_nf_CF0="棉花连续,094409,15560.000,15625.000,'
                 '15460.000,0.000,15470.000,15475.000,15475.000";'
             ),
         ) as fetch_text:
             with patch.object(
-                api_server.ApiHandler,
-                "_fetch_public_html",
+                api_server.outcall_api,
+                "fetch_public_html",
                 return_value=(
                     "<table><tr data-currency='美元'>"
                     "<td>美元</td><td>666.30</td><td>666.30</td>"
@@ -141,13 +414,9 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(
             result["derived_prices"]["import_cotton"],
             round(
-                (
-                    (
-                        (15470 - 100) / 1.09 / 6.6911 / 22.0462
-                        - 1.5
-                    )
-                    / 1.4
-                ),
+                (15470 - 100) / 1.09 / 6.6911 / 22.0462
+                - 3800 / 6.6911 / 22.0462
+                - 1.5,
                 2,
             ),
         )
@@ -158,8 +427,8 @@ class ApiIntegrationTests(unittest.TestCase):
 
     def test_market_api_failure_returns_translated_error(self):
         with patch.object(
-            api_server.ApiHandler,
-            "_fetch_public_json",
+            api_server.outcall_api,
+            "fetch_public_json",
             side_effect=URLError("upstream unavailable"),
         ):
             response = self.request("/api/market-prices?locale=en")
@@ -193,7 +462,7 @@ class ApiIntegrationTests(unittest.TestCase):
             }
         }
         with patch.object(
-            api_server.ApiHandler, "_fetch_public_json", return_value=history
+            api_server.outcall_api, "fetch_public_json", return_value=history
         ) as fetch:
             response = self.request("/api/market-history?asset=btc&locale=en")
 
@@ -232,7 +501,7 @@ class ApiIntegrationTests(unittest.TestCase):
             '"l":"15490.000","c":"15550.000"}]);'
         )
         with patch.object(
-            api_server.ApiHandler, "_fetch_public_text", return_value=history
+            api_server.outcall_api, "fetch_public_text", return_value=history
         ):
             response = self.request("/api/market-history?asset=zce_cotton")
 
@@ -273,8 +542,8 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(self.register().code, 201)
         upload_response = self.upload("notes.txt", b"Private file contents", "text/plain")
         upload_id = json.loads(upload_response.read())["upload"]["id"]
-        with patch.object(api_server, "AI_API_KEY", ""), patch.object(
-            api_server, "AI_MODEL", ""
+        with patch.object(ai_analysis, "AI_API_KEY", ""), patch.object(
+            ai_analysis, "AI_MODEL", ""
         ):
             response = self.request(
                 f"/api/uploads/{upload_id}/ai-analysis",
@@ -306,14 +575,14 @@ class ApiIntegrationTests(unittest.TestCase):
             ).encode()
         )
         messages = [{"role": "user", "content": "Analyze this document."}]
-        with patch.object(api_server, "AI_API_BASE_URL", "https://ai.example/v1"), patch.object(
-            api_server, "AI_API_KEY", "server-secret"
+        with patch.object(ai_analysis, "AI_API_BASE_URL", "https://ai.example/v1"), patch.object(
+            ai_analysis, "AI_API_KEY", "server-secret"
         ), patch.object(
-            api_server, "AI_MODEL", "test-model"
+            ai_analysis, "AI_MODEL", "test-model"
         ), patch.object(
-            api_server, "urlopen", return_value=response
+            ai_analysis, "urlopen", return_value=response
         ) as open_url:
-            result = api_server.request_ai_completion(messages)
+            result = ai_analysis.request_ai_completion(messages)
 
         request = open_url.call_args.args[0]
         payload = json.loads(request.data)
@@ -327,10 +596,10 @@ class ApiIntegrationTests(unittest.TestCase):
         content = b"Quarterly sales increased by 12 percent."
         upload_response = self.upload("report.txt", content, "text/plain")
         upload_id = json.loads(upload_response.read())["upload"]["id"]
-        with patch.object(api_server, "AI_API_KEY", "test-key"), patch.object(
-            api_server, "AI_MODEL", "test-model"
+        with patch.object(ai_analysis, "AI_API_KEY", "test-key"), patch.object(
+            ai_analysis, "AI_MODEL", "test-model"
         ), patch.object(
-            api_server,
+            ai_analysis,
             "request_ai_completion",
             return_value="Summary: sales increased.",
         ) as complete:
@@ -340,26 +609,24 @@ class ApiIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.code, 200)
-        self.assertEqual(
-            json.loads(response.read()),
-            {
-                "analysis": {
-                    "type": "ai",
-                    "text": "Summary: sales increased.",
-                    "model": "test-model",
-                }
-            },
-        )
+        result = json.loads(response.read())["analysis"]
+        self.assertEqual(result["type"], "ai")
+        self.assertEqual(result["text"], "Summary: sales increased.")
+        self.assertEqual(result["model"], "test-model")
+        self.assertIn("analyzed_at", result)
         self.assertIn(content.decode(), complete.call_args.args[0][1]["content"])
+
+        details = json.loads(self.request(f"/api/uploads/{upload_id}").read())
+        self.assertEqual(details["ai_analysis"], result)
 
     def test_ai_analysis_sends_supported_image_as_data_url(self):
         self.assertEqual(self.register().code, 201)
         upload_response = self.upload("chart.png", b"png bytes", "image/png")
         upload_id = json.loads(upload_response.read())["upload"]["id"]
-        with patch.object(api_server, "AI_API_KEY", "test-key"), patch.object(
-            api_server, "AI_MODEL", "vision-model"
+        with patch.object(ai_analysis, "AI_API_KEY", "test-key"), patch.object(
+            ai_analysis, "AI_MODEL", "vision-model"
         ), patch.object(
-            api_server,
+            ai_analysis,
             "request_ai_completion",
             return_value="A chart.",
         ) as complete:
@@ -370,6 +637,8 @@ class ApiIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.code, 200)
         image_content = complete.call_args.args[0][1]["content"]
+        self.assertIn("棉花质检报告", image_content[0]["text"])
+        self.assertIn("断裂比强度", image_content[0]["text"])
         self.assertEqual(
             image_content[1]["image_url"]["url"],
             "data:image/png;base64,cG5nIGJ5dGVz",
@@ -388,10 +657,10 @@ class ApiIntegrationTests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         upload_id = json.loads(upload_response.read())["upload"]["id"]
-        with patch.object(api_server, "AI_API_KEY", "test-key"), patch.object(
-            api_server, "AI_MODEL", "test-model"
+        with patch.object(ai_analysis, "AI_API_KEY", "test-key"), patch.object(
+            ai_analysis, "AI_MODEL", "test-model"
         ), patch.object(
-            api_server,
+            ai_analysis,
             "request_ai_completion",
             return_value="Two rows.",
         ) as complete:
@@ -410,12 +679,12 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(self.register().code, 201)
         upload_response = self.upload("report.txt", b"123456", "text/plain")
         upload_id = json.loads(upload_response.read())["upload"]["id"]
-        with patch.object(api_server, "AI_API_KEY", "test-key"), patch.object(
-            api_server, "AI_MODEL", "test-model"
+        with patch.object(ai_analysis, "AI_API_KEY", "test-key"), patch.object(
+            ai_analysis, "AI_MODEL", "test-model"
         ), patch.object(
-            api_server, "AI_MAX_INPUT_CHARS", 5
+            ai_analysis, "AI_MAX_INPUT_CHARS", 5
         ), patch.object(
-            api_server, "request_ai_completion"
+            ai_analysis, "request_ai_completion"
         ) as complete:
             response = self.request(
                 f"/api/uploads/{upload_id}/ai-analysis",
@@ -479,8 +748,10 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         upload_id = json.loads(upload_response.read())["upload"]["id"]
         response = self.request(f"/api/uploads/{upload_id}?analyze=1")
-        analysis = json.loads(response.read())["analysis"]
+        result = json.loads(response.read())
+        analysis = result["analysis"]
         self.assertEqual(analysis["type"], "excel")
+        self.assertIsNone(result["cotton_quotation_import"])
         self.assertEqual(analysis["sheets"][0]["preview"]["columns"], ["value", "label"])
         self.assertEqual(analysis["sheets"][0]["rows"], 2)
 

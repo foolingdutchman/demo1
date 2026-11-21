@@ -32,6 +32,16 @@
 		.derived-price { display: block; margin: 4px 0; color: #087f70; font-size: 26px; }
 		.derived-panel p { margin: 8px 0 0; color: #68758a; font-size: 13px; line-height: 1.7; }
 		.derived-panel .notice { color: #9c2f25; }
+		.quotation-panel { margin: 0 0 24px; padding: 18px; background: #f5f8f7; border: 1px solid #dfe8e5; border-radius: 10px; }
+		.quotation-panel h2 { margin: 0 0 14px; font-size: 18px; }
+		.quotation-panel h3 { margin: 20px 0 8px; font-size: 15px; }
+		.quotation-panel .table-wrap { max-width: 100%; overflow-x: auto; }
+		.quotation-panel table { width: max-content; min-width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+		.quotation-panel th, .quotation-panel td { padding: 8px; border-bottom: 1px solid #dfe8e5; white-space: nowrap; }
+		.quotation-panel th { color: #68758a; }
+		.quotation-panel td:last-child { min-width: 220px; max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
+		.quotation-status { color: #68758a; font-size: 14px; }
+		.quotation-status:empty { display: none; }
 		.chart-panel { padding: 22px; background: #fbfcfd; border: 1px solid #e7eceb; border-radius: 12px; }
 		.chart-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 		.chart-heading h2 { margin: 0; font-size: 20px; }
@@ -110,6 +120,11 @@
 				<p data-i18n="market.import_cotton_unit"></p>
 				<p data-i18n="market.import_cotton_formula"></p>
 				<p class="notice" id="market-import-cotton-status" role="status"></p>
+			</section>
+			<section class="quotation-panel" id="cotton-quotation-panel" hidden aria-labelledby="cotton-quotation-heading">
+				<h2 id="cotton-quotation-heading" data-i18n="market.cotton_data_title"></h2>
+				<p class="quotation-status" id="cotton-quotation-status" role="status"></p>
+				<div id="cotton-quotation-tables"></div>
 			</section>
 			<section class="chart-panel" aria-labelledby="market-history-heading">
 				<div class="chart-heading">
