@@ -28,6 +28,22 @@
 		.derived-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
 		.derived-fields label { display: block; margin-bottom: 6px; color: #46546a; font-size: 13px; font-weight: 600; }
 		.derived-fields input { width: 100%; min-height: 42px; padding: 8px 10px; color: #233047; background: #fff; border: 1px solid #cbd6d3; border-radius: 7px; font: inherit; }
+		.sudan-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+		.sudan-fields label { display: block; margin-bottom: 6px; color: #46546a; font-size: 13px; font-weight: 600; }
+		.sudan-fields input, .sudan-fields select { width: 100%; min-height: 42px; padding: 8px 10px; color: #233047; background: #fff; border: 1px solid #cbd6d3; border-radius: 7px; font: inherit; }
+		.sudan-results { margin-top: 20px; }
+		.sudan-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+		.sudan-metric { padding: 14px; background: #fff; border: 1px solid #dfe8e5; border-radius: 8px; }
+		.sudan-metric span { display: block; color: #68758a; font-size: 13px; }
+		.sudan-metric strong { display: block; margin-top: 6px; color: #087f70; font-size: 20px; overflow-wrap: anywhere; }
+		.sudan-quote-evaluation, .sudan-cash-flow { margin-top: 16px; padding: 14px; background: #fff; border: 1px solid #dfe8e5; border-radius: 8px; }
+		.sudan-quote-evaluation h3, .sudan-cash-flow h3, .sudan-scenarios h3 { margin: 0 0 8px; font-size: 15px; }
+		.sudan-results p { margin: 8px 0 0; color: #68758a; font-size: 13px; line-height: 1.7; }
+		.sudan-scenarios { margin-top: 20px; }
+		.sudan-scenarios .table-wrap { max-width: 100%; margin-top: 8px; overflow-x: auto; }
+		.sudan-scenarios table { width: max-content; min-width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+		.sudan-scenarios th, .sudan-scenarios td { padding: 8px; border-bottom: 1px solid #dfe8e5; white-space: nowrap; }
+		.sudan-scenarios th { color: #68758a; }
 		.derived-fields input[aria-invalid="true"] { border-color: #9c2f25; }
 		.derived-price { display: block; margin: 4px 0; color: #087f70; font-size: 26px; }
 		.derived-panel p { margin: 8px 0 0; color: #68758a; font-size: 13px; line-height: 1.7; }
@@ -73,6 +89,7 @@
 			.chart-panel { padding: 16px; }
 			.chart-heading { align-items: flex-start; flex-direction: column; }
 			.derived-fields { grid-template-columns: 1fr; }
+			.sudan-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 		}
 	</style>
 </head>
@@ -95,7 +112,8 @@
 				<span class="price-date" id="market-detail-unit"></span>
 			</div>
 			<p class="status notice" id="market-current-status" role="status"></p>
-			<div class="price-summary">
+			<p class="chart-source" id="market-current-history-note" hidden></p>
+			<div class="price-summary" id="market-history-summary">
 				<span class="price-label" data-i18n="market.history_latest"></span>
 				<strong class="price-value" id="market-history-latest" data-i18n="market.loading"></strong>
 				<span class="price-date" id="market-history-date"></span>
@@ -121,12 +139,76 @@
 				<p data-i18n="market.import_cotton_formula"></p>
 				<p class="notice" id="market-import-cotton-status" role="status"></p>
 			</section>
+			<section class="derived-panel" id="sudan-cotton-pricing-panel" hidden aria-labelledby="sudan-cotton-pricing-heading">
+				<h2 id="sudan-cotton-pricing-heading" data-i18n="market.sudan_pricing_title"></h2>
+				<p data-i18n="market.sudan_pricing_intro"></p>
+				<div class="sudan-fields">
+					<div><label for="sudan-benchmark-source" data-i18n="market.sudan_benchmark_source_label"></label><select id="sudan-benchmark-source"><option value="cc_index_2227b" data-i18n="market.cc_index_2227b"></option><option value="cc_index_3128b" data-i18n="market.cc_index_3128b"></option><option value="cc_index_2129b" data-i18n="market.cc_index_2129b"></option><option value="zce_cotton" data-i18n="market.zce_cotton"></option><option value="manual" data-i18n="market.sudan_manual_benchmark"></option></select></div>
+					<div><label for="sudan-buyer-bid" data-i18n="market.sudan_buyer_bid_label"></label><input id="sudan-buyer-bid" data-sudan-field="direct_buyer_bid_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-buyer-bid-vat" data-i18n="market.sudan_buyer_bid_vat_label"></label><select id="sudan-buyer-bid-vat" data-sudan-field="buyer_bid_vat_inclusive"><option value="true" data-i18n="market.sudan_yes"></option><option value="false" data-i18n="market.sudan_no"></option></select></div>
+					<div><label for="sudan-benchmark" data-i18n="market.sudan_benchmark_label"></label><input id="sudan-benchmark" data-sudan-field="domestic_benchmark_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-benchmark-vat" data-i18n="market.sudan_benchmark_vat_label"></label><select id="sudan-benchmark-vat" data-sudan-field="benchmark_vat_inclusive"><option value="true" data-i18n="market.sudan_yes"></option><option value="false" data-i18n="market.sudan_no"></option></select></div>
+					<div><label for="sudan-quality-discount" data-i18n="market.sudan_quality_discount_label"></label><input id="sudan-quality-discount" data-sudan-field="quality_discount_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-quality-basis" data-i18n="market.sudan_quality_basis_label"></label><select id="sudan-quality-basis" data-sudan-field="quality_discount_basis"><option value="gross" data-i18n="market.sudan_gross"></option><option value="net" data-i18n="market.sudan_net"></option></select></div>
+					<div><label for="sudan-sales-vat" data-i18n="market.sudan_sales_vat_label"></label><input id="sudan-sales-vat" data-sudan-field="domestic_sales_vat_percent" type="number" min="0" max="100" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-fx" data-i18n="market.sudan_fx_label"></label><input id="sudan-fx" data-sudan-field="fx_cny_per_usd" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-duty" data-i18n="market.sudan_duty_label"></label><input id="sudan-duty" data-sudan-field="duty_percent" type="number" min="0" max="100" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-import-vat" data-i18n="market.sudan_import_vat_label"></label><input id="sudan-import-vat" data-sudan-field="import_vat_percent" type="number" min="0" max="100" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-recoverable-vat" data-i18n="market.sudan_recoverable_vat_label"></label><input id="sudan-recoverable-vat" data-sudan-field="import_vat_recoverable_percent" type="number" min="0" max="100" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-quota-cost" data-i18n="market.sudan_quota_cost_label"></label><input id="sudan-quota-cost" data-sudan-field="quota_cost_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-quota-vat" data-i18n="market.sudan_quota_vat_label"></label><input id="sudan-quota-vat" data-sudan-field="quota_recoverable_vat_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-other-cost" data-i18n="market.sudan_other_cost_label"></label><input id="sudan-other-cost" data-sudan-field="other_nonrecoverable_cost_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-other-vat" data-i18n="market.sudan_other_vat_label"></label><input id="sudan-other-vat" data-sudan-field="other_recoverable_vat_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-target-profit" data-i18n="market.sudan_target_profit_label"></label><input id="sudan-target-profit" data-sudan-field="target_profit_cny_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-supplier-quote" data-i18n="market.sudan_supplier_quote_label"></label><input id="sudan-supplier-quote" data-sudan-field="supplier_quote_usd_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-quote-basis" data-i18n="market.sudan_quote_basis_label"></label><select id="sudan-quote-basis" data-sudan-field="supplier_quote_basis"><option value="CIF" data-i18n="market.sudan_cif_basis"></option><option value="FOB" data-i18n="market.sudan_fob_basis"></option></select></div>
+					<div><label for="sudan-freight" data-i18n="market.sudan_freight_label"></label><input id="sudan-freight" data-sudan-field="ocean_freight_usd_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-insurance" data-i18n="market.sudan_insurance_label"></label><input id="sudan-insurance" data-sudan-field="insurance_usd_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-other-cif-cost" data-i18n="market.sudan_other_cif_cost_label"></label><input id="sudan-other-cif-cost" data-sudan-field="other_cif_cost_usd_per_ton" type="number" min="0" step="any" inputmode="decimal"></div>
+					<div><label for="sudan-quantity" data-i18n="market.sudan_quantity_label"></label><input id="sudan-quantity" data-sudan-field="quantity_tons" type="number" min="0" step="any" inputmode="decimal"></div>
+				</div>
+				<p class="notice" id="sudan-cotton-pricing-status" role="status"></p>
+				<div class="sudan-results" id="sudan-cotton-pricing-results" hidden>
+					<div class="sudan-metrics">
+						<div class="sudan-metric"><span data-i18n="market.sudan_max_target_price"></span><strong id="sudan-max-target-price"></strong></div>
+						<div class="sudan-metric"><span data-i18n="market.sudan_break_even_price"></span><strong id="sudan-break-even-price"></strong></div>
+					</div>
+					<p class="notice" id="sudan-pricing-limit-status"></p>
+					<div class="sudan-quote-evaluation" id="sudan-quote-evaluation" hidden>
+						<h3 data-i18n="market.sudan_supplier_evaluation"></h3>
+						<p id="sudan-quote-cif-price"></p>
+						<p id="sudan-quote-profit"></p>
+						<p id="sudan-quote-total-profit"></p>
+						<p id="sudan-quote-headroom"></p>
+					</div>
+					<div class="sudan-cash-flow" id="sudan-cash-flow">
+						<h3 data-i18n="market.sudan_cash_flow"></h3>
+						<p id="sudan-cash-flow-reference"></p>
+						<p id="sudan-import-vat-cash"></p>
+						<p id="sudan-vat-balance"></p>
+						<p id="sudan-funding"></p>
+					</div>
+					<div class="sudan-scenarios">
+						<h3 data-i18n="market.sudan_domestic_scenarios"></h3>
+						<div class="table-wrap" id="sudan-domestic-scenarios"></div>
+						<h3 data-i18n="market.sudan_fx_scenarios"></h3>
+						<div class="table-wrap" id="sudan-fx-scenarios"></div>
+						<h3 data-i18n="market.sudan_quota_scenarios"></h3>
+						<div class="table-wrap" id="sudan-quota-scenarios"></div>
+						<div id="sudan-quote-scenarios-panel" hidden>
+							<h3 data-i18n="market.sudan_quote_scenarios"></h3>
+							<div class="table-wrap" id="sudan-quote-scenarios"></div>
+						</div>
+					</div>
+					<p data-i18n="market.sudan_pricing_risks"></p>
+				</div>
+			</section>
 			<section class="quotation-panel" id="cotton-quotation-panel" hidden aria-labelledby="cotton-quotation-heading">
 				<h2 id="cotton-quotation-heading" data-i18n="market.cotton_data_title"></h2>
 				<p class="quotation-status" id="cotton-quotation-status" role="status"></p>
 				<div id="cotton-quotation-tables"></div>
 			</section>
-			<section class="chart-panel" aria-labelledby="market-history-heading">
+			<section class="chart-panel" id="market-history-panel" aria-labelledby="market-history-heading">
 				<div class="chart-heading">
 					<h2 id="market-history-heading" data-i18n="market.history_title"></h2>
 					<span data-i18n="market.history_period"></span>

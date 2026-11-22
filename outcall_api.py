@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import html
 from html.parser import HTMLParser
 import json
 import logging
@@ -18,6 +19,7 @@ ICE_COTTON_PRICE_API_URL = (
     "?range=1d&interval=1m"
 )
 ZCE_COTTON_PRICE_API_URL = "https://hq.sinajs.cn/list=nf_CF0"
+CC_INDEX_PRICES_URL = "https://www.cottonchina.org.cn/"
 BOC_EXCHANGE_RATES_API_URL = "https://www.boc.cn/sourcedb/whpj/"
 SINA_REFERER_URL = "https://finance.sina.com.cn/"
 ZCE_COTTON_HISTORY_API_URL = (
@@ -48,7 +50,16 @@ MARKET_CURRENCIES = {
     "eth": "USD",
     "ice_cotton": "US¢",
     "zce_cotton": "CNY",
+    "cc_index_3128b": "CNY",
+    "cc_index_2227b": "CNY",
+    "cc_index_2129b": "CNY",
     "usd_cny": "CNY",
+}
+MARKET_HISTORY_ASSETS = set(YAHOO_HISTORY_SYMBOLS) | {"zce_cotton"}
+CC_INDEX_ASSETS = {
+    "CC Index 3128B": "cc_index_3128b",
+    "CC Index 2227B": "cc_index_2227b",
+    "CC Index 2129B": "cc_index_2129b",
 }
 
 
@@ -114,7 +125,7 @@ def fetch_public_text(url):
         return response.read().decode("gbk")
 
 
-def fetch_public_html(url):
+def fetch_public_html(url, encoding="utf-8"):
     request = Request(
         url,
         headers={
@@ -123,7 +134,55 @@ def fetch_public_html(url):
         },
     )
     with urlopen(request, timeout=PUBLIC_API_TIMEOUT_SECONDS) as response:
-        return response.read().decode("utf-8")
+        return response.read().decode(encoding)
+
+
+def parse_cc_index_prices(page_html):
+    quotes = {}
+    blocks = re.finditer(
+        r"<div\s+class=['\"]nd_cotton_block(?:\s+mgr0)?['\"]>"
+        r"(.*?)(?=<div\s+class=['\"]nd_cotton_block|\Z)",
+        page_html,
+        re.I | re.S,
+    )
+    for match in blocks:
+        block = match.group(1)
+        name_match = re.search(
+            r"<div\s+class=['\"]nd_block_t['\"]>(.*?)</div>",
+            block,
+            re.I | re.S,
+        )
+        if name_match is None:
+            continue
+        name = html.unescape(re.sub(r"<[^>]+>", "", name_match.group(1))).strip()
+        asset = CC_INDEX_ASSETS.get(name)
+        if asset is None:
+            continue
+        date_match = re.search(
+            r"<div\s+class=['\"]nd_block_d['\"]>(.*?)</div>",
+            block,
+            re.I | re.S,
+        )
+        price_match = re.search(
+            r"<div\s+class=['\"]nd_block_p['\"]>\s*<span[^>]*>"
+            r"\s*([\d,]+(?:\.\d+)?)",
+            block,
+            re.I | re.S,
+        )
+        if date_match is None or price_match is None:
+            raise ValueError(f"CC Index quote is missing for {name}")
+        quote_date = html.unescape(
+            re.sub(r"<[^>]+>", "", date_match.group(1))
+        ).strip()
+        datetime.strptime(quote_date, "%Y-%m-%d")
+        price = float(price_match.group(1).replace(",", ""))
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError(f"CC Index quote is invalid for {name}")
+        quotes[asset] = {"price": price, "date": quote_date}
+
+    if set(quotes) != set(CC_INDEX_ASSETS.values()):
+        raise ValueError("CC Index quotes were not all returned")
+    return quotes
 
 
 def get_market_prices():
@@ -133,6 +192,22 @@ def get_market_prices():
         ice_cotton = fetch_public_json(ICE_COTTON_PRICE_API_URL)
         zce_cotton = fetch_public_text(ZCE_COTTON_PRICE_API_URL)
         boc_rates = fetch_public_html(BOC_EXCHANGE_RATES_API_URL)
+        cc_index_quotes = {}
+        try:
+            cc_index_quotes = parse_cc_index_prices(
+                fetch_public_html(CC_INDEX_PRICES_URL, encoding="gbk")
+            )
+        except (
+            URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+            logging.warning(
+                "Could not retrieve CC Index prices: %s",
+                type(error).__name__,
+            )
         ice_result = ice_cotton["chart"]["result"][0]
         ice_price = float(ice_result["meta"]["regularMarketPrice"])
         cotton_quote = re.search(r'hq_str_nf_CF0="([^"]*)"', zce_cotton)
@@ -154,6 +229,10 @@ def get_market_prices():
             "zce_cotton": float(cotton_fields[6]),
             "usd_cny": usd_cny_spot_sell,
         }
+        asset_dates = {}
+        for asset, quote in cc_index_quotes.items():
+            prices[asset] = quote["price"]
+            asset_dates[asset] = quote["date"]
         if any(not math.isfinite(price) or price <= 0 for price in prices.values()):
             raise ValueError("Public market API returned an invalid price")
         import_cotton_price = round(
@@ -178,8 +257,12 @@ def get_market_prices():
         "asset_currencies": {
             "ice_cotton": "US¢",
             "zce_cotton": "CNY",
+            "cc_index_3128b": "CNY",
+            "cc_index_2227b": "CNY",
+            "cc_index_2129b": "CNY",
             "usd_cny": "CNY",
         },
+        "asset_dates": asset_dates,
         "prices": prices,
         "derived_prices": {"import_cotton": import_cotton_price},
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -231,7 +314,7 @@ def yahoo_history_points(payload):
 
 
 def get_market_history(asset):
-    if asset not in MARKET_CURRENCIES:
+    if asset not in MARKET_HISTORY_ASSETS:
         raise InvalidMarketAsset
 
     try:

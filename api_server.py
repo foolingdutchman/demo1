@@ -16,6 +16,7 @@ import auth_manager
 import db_manager
 import image_analysis
 import outcall_api
+import sudan_cotton_pricing
 from ai_analysis import TEXT_EXTENSIONS, decode_text_file
 from excel_analysis import EXCEL_EXTENSIONS, ExcelAnalysisError, build_excel_analysis
 from i18n import SUPPORTED_LOCALES, get_locale, get_messages, translate
@@ -247,6 +248,21 @@ class ApiHandler(BaseHTTPRequestHandler):
                 502,
                 "market_data_unavailable",
                 self._t("market.unavailable"),
+            )
+            return
+        self._send_json(result)
+
+    def _handle_sudan_cotton_pricing(self):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            result = sudan_cotton_pricing.calculate_sudan_cotton_pricing(fields)
+        except sudan_cotton_pricing.PricingInputError:
+            self._send_error_json(
+                400,
+                "invalid_pricing_input",
+                self._t("market.sudan_pricing_invalid_input"),
             )
             return
         self._send_json(result)
@@ -632,6 +648,9 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlsplit(self.path)
+        if parsed.path == "/api/sudan-cotton-pricing":
+            self._handle_sudan_cotton_pricing()
+            return
         if parsed.path == "/api/auth":
             self._handle_auth()
             return

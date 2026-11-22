@@ -32,6 +32,7 @@ Open `http://127.0.0.1:5500`. The frontend script serves only the static files; 
 All application data endpoints return JSON. Errors use the shape `{"error":{"code":"...","message":"..."}}`. The API uses an HTTP-only session cookie, so browser requests include credentials.
 
 - `GET /api/health`, `GET /api/translations?locale=zh-CN`, `GET /api/session`
+- `POST /api/sudan-cotton-pricing` to calculate a Sudan cotton CIF Qingdao purchase model from string-valued JSON inputs
 - `POST /api/auth` with JSON fields `mode`, `username`, `password`, and (for registration) `confirm_password`
 - `POST /api/logout`
 - `GET /api/uploads`, `POST /api/uploads` with multipart field `file`
@@ -41,6 +42,14 @@ All application data endpoints return JSON. Errors use the shape `{"error":{"cod
 - `GET /api/uploads/{id}/content` for previewable file content; add `?download=1` to download
 
 The content endpoint returns the file bytes rather than JSON so browsers can display or download the original file.
+
+## Sudan cotton purchase model
+
+The cotton market board and detail pages show the latest CC Index 3128B, 2227B, and 2129B quotations from the public China Cotton Information Network homepage, including the source quote date. Its historical detail page requires login, so no CC Index history is fabricated or displayed. CC Index and Zhengzhou cotton prices are shown in CNY/tonne.
+
+The Zhengzhou cotton detail page includes a parameterized CIF Qingdao model for Sudan cotton. The domestic selling benchmark can use CC Index 3128B, 2227B (the default), 2129B, Zhengzhou cotton futures, or a manually entered price; the user can also enter an actual mill bid and a CIF or FOB supplier offer (with freight, insurance, and other CIF costs for FOB conversion). The model separately reports economic profit, maximum CIF for a target profit, break-even CIF, recoverable import VAT and estimated import-stage cash funding, with domestic-price, FX, quota-cost, and supplier-quote sensitivities. Sudan cotton USD/tonne prices are also converted to US cents per pound (USC/lb).
+
+The defaults (including a CNY 500/tonne quality discount, CNY 4,200/tonne quota cost, 0% duty, and 100% recoverable import VAT) are editable case assumptions, not verified market or tariff facts. Confirm the shipment's actual HS code and quota treatment, tax documentation, HVI quality, buyer bids, and settlement FX before relying on a result. Any domestic index or futures price is only a provisional benchmark, not an actual Sudan cotton sale price.
 
 ## AI file analysis
 

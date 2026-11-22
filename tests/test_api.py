@@ -370,6 +370,30 @@ class ApiIntegrationTests(unittest.TestCase):
                 }
             }
 
+        def fake_public_html(url, encoding="utf-8"):
+            if url == api_server.outcall_api.CC_INDEX_PRICES_URL:
+                return (
+                    "<div class='nd_cotton_block'><div class='nd_block_t'>"
+                    "CC Index 3128B</div><div class='nd_block_d'>2026-11-20"
+                    "</div><div class='nd_block_p'><span>16881</span> 元/吨"
+                    "</div></div>"
+                    "<div class='nd_cotton_block'><div class='nd_block_t'>"
+                    "CC Index 2227B</div><div class='nd_block_d'>2026-11-20"
+                    "</div><div class='nd_block_p'><span>15360</span> 元/吨"
+                    "</div></div>"
+                    "<div class='nd_cotton_block mgr0'><div class='nd_block_t'>"
+                    "CC Index 2129B</div><div class='nd_block_d'>2026-11-20"
+                    "</div><div class='nd_block_p'><span>17189</span> 元/吨"
+                    "</div></div>"
+                )
+            return (
+                "<table><tr data-currency='美元'>"
+                "<td>美元</td><td>666.30</td><td>666.30</td>"
+                "<td>669.11</td><td>669.11</td><td>671.31</td>"
+                "<td>2026/11/20 09:55:53</td><td>09:55:53</td>"
+                "</tr></table>"
+            )
+
         with patch.object(
             api_server.outcall_api, "fetch_public_json", side_effect=fake_public_json
         ) as fetch, patch.object(
@@ -383,13 +407,7 @@ class ApiIntegrationTests(unittest.TestCase):
             with patch.object(
                 api_server.outcall_api,
                 "fetch_public_html",
-                return_value=(
-                    "<table><tr data-currency='美元'>"
-                    "<td>美元</td><td>666.30</td><td>666.30</td>"
-                    "<td>669.11</td><td>669.11</td><td>671.31</td>"
-                    "<td>2026/11/20 09:55:53</td><td>09:55:53</td>"
-                    "</tr></table>"
-                ),
+                side_effect=fake_public_html,
             ) as fetch_html:
                 response = self.request("/api/market-prices")
 
@@ -404,12 +422,30 @@ class ApiIntegrationTests(unittest.TestCase):
                 "eth": 3500.5,
                 "ice_cotton": 79.96,
                 "zce_cotton": 15470.0,
+                "cc_index_3128b": 16881.0,
+                "cc_index_2227b": 15360.0,
+                "cc_index_2129b": 17189.0,
                 "usd_cny": 6.6911,
             },
         )
         self.assertEqual(
             result["asset_currencies"],
-            {"ice_cotton": "US¢", "zce_cotton": "CNY", "usd_cny": "CNY"},
+            {
+                "ice_cotton": "US¢",
+                "zce_cotton": "CNY",
+                "cc_index_3128b": "CNY",
+                "cc_index_2227b": "CNY",
+                "cc_index_2129b": "CNY",
+                "usd_cny": "CNY",
+            },
+        )
+        self.assertEqual(
+            result["asset_dates"],
+            {
+                "cc_index_3128b": "2026-11-20",
+                "cc_index_2227b": "2026-11-20",
+                "cc_index_2129b": "2026-11-20",
+            },
         )
         self.assertEqual(
             result["derived_prices"]["import_cotton"],
@@ -423,7 +459,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertIn("updated_at", result)
         self.assertEqual(fetch.call_count, 3)
         fetch_text.assert_called_once()
-        fetch_html.assert_called_once()
+        self.assertEqual(fetch_html.call_count, 2)
 
     def test_market_api_failure_returns_translated_error(self):
         with patch.object(
@@ -440,6 +476,193 @@ class ApiIntegrationTests(unittest.TestCase):
             error["message"],
             "Prices are temporarily unavailable. Please try again later.",
         )
+
+    def test_public_market_prices_remain_available_when_cc_index_fails(self):
+        def fake_public_json(url):
+            if "gold-api.com" in url:
+                return {"price": 2345.67}
+            if "coingecko.com" in url:
+                return {"bitcoin": {"usd": 68000.25}, "ethereum": {"usd": 3500.5}}
+            return {"chart": {"result": [{"meta": {"regularMarketPrice": 79.96}}]}}
+
+        def fake_public_html(url, encoding="utf-8"):
+            if url == api_server.outcall_api.CC_INDEX_PRICES_URL:
+                raise URLError("CC Index unavailable")
+            return (
+                "<table><tr data-currency='美元'>"
+                "<td>美元</td><td>666.30</td><td>666.30</td>"
+                "<td>669.11</td><td>669.11</td><td>671.31</td>"
+                "<td>2026/11/20 09:55:53</td><td>09:55:53</td>"
+                "</tr></table>"
+            )
+
+        with patch.object(
+            api_server.outcall_api, "fetch_public_json", side_effect=fake_public_json
+        ), patch.object(
+            api_server.outcall_api,
+            "fetch_public_text",
+            return_value=(
+                'var hq_str_nf_CF0="棉花连续,094409,15560.000,15625.000,'
+                '15460.000,0.000,15470.000,15475.000,15475.000";'
+            ),
+        ), patch.object(
+            api_server.outcall_api,
+            "fetch_public_html",
+            side_effect=fake_public_html,
+        ):
+            result = api_server.outcall_api.get_market_prices()
+
+        self.assertEqual(
+            set(result["prices"]),
+            {"gold", "btc", "eth", "ice_cotton", "zce_cotton", "usd_cny"},
+        )
+        self.assertEqual(result["asset_dates"], {})
+
+    def test_sudan_cotton_pricing_returns_target_and_quote_evaluation(self):
+        fields = {
+            "direct_buyer_bid_cny_per_ton": "",
+            "buyer_bid_vat_inclusive": "true",
+            "domestic_benchmark_cny_per_ton": "15360",
+            "benchmark_vat_inclusive": "true",
+            "quality_discount_cny_per_ton": "500",
+            "quality_discount_basis": "gross",
+            "domestic_sales_vat_percent": "9",
+            "fx_cny_per_usd": "6.7",
+            "duty_percent": "0",
+            "import_vat_percent": "9",
+            "import_vat_recoverable_percent": "100",
+            "quota_cost_cny_per_ton": "4200",
+            "quota_recoverable_vat_cny_per_ton": "0",
+            "other_nonrecoverable_cost_cny_per_ton": "500",
+            "other_recoverable_vat_cny_per_ton": "0",
+            "target_profit_cny_per_ton": "300",
+            "supplier_quote_usd_per_ton": "1150",
+            "supplier_quote_basis": "FOB",
+            "ocean_freight_usd_per_ton": "40",
+            "insurance_usd_per_ton": "5",
+            "other_cif_cost_usd_per_ton": "5",
+            "quantity_tons": "100",
+        }
+        response = self.request(
+            "/api/sudan-cotton-pricing",
+            "POST",
+            json.dumps(fields).encode(),
+            {"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(response.code, 200)
+        result = json.loads(response.read())
+        net_sales = 14860 / 1.09
+        self.assertAlmostEqual(
+            result["max_target_cif_cny_per_ton"], net_sales - 5000
+        )
+        self.assertAlmostEqual(
+            result["max_target_cif_usd_per_ton"], (net_sales - 5000) / 6.7
+        )
+        self.assertAlmostEqual(
+            result["max_target_cif_us_cents_per_lb"],
+            result["max_target_cif_usd_per_ton"] / 22.0462,
+        )
+        self.assertAlmostEqual(
+            result["break_even_cif_cny_per_ton"], net_sales - 4700
+        )
+        self.assertAlmostEqual(
+            result["supplier_evaluation"]["profit_cny_per_ton"],
+            net_sales - 4200 - 500 - 1200 * 6.7,
+        )
+        self.assertEqual(
+            result["supplier_evaluation"]["supplier_quote_usd_per_ton"], 1150
+        )
+        self.assertEqual(
+            result["supplier_evaluation"]["cif_usd_per_ton"], 1200
+        )
+        self.assertAlmostEqual(
+            result["supplier_evaluation"]["cif_us_cents_per_lb"],
+            1200 / 22.0462,
+        )
+        self.assertAlmostEqual(
+            result["supplier_evaluation"]["import_vat_paid_cny_per_ton"],
+            1200 * 6.7 * 0.09,
+        )
+        self.assertAlmostEqual(
+            result["supplier_evaluation"]["profit_for_quantity_cny"],
+            result["supplier_evaluation"]["profit_cny_per_ton"] * 100,
+        )
+        self.assertEqual(len(result["scenarios"]["supplier_quote"]), 5)
+
+        fields["direct_buyer_bid_cny_per_ton"] = "16000"
+        response = self.request(
+            "/api/sudan-cotton-pricing",
+            "POST",
+            json.dumps(fields).encode(),
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.code, 200)
+        result = json.loads(response.read())
+        actual_bid_net = 16000 / 1.09
+        self.assertAlmostEqual(
+            result["max_target_cif_cny_per_ton"], actual_bid_net - 5000
+        )
+        self.assertAlmostEqual(
+            result["scenarios"]["domestic_price"][1]["max_target_cif_usd_per_ton"],
+            (actual_bid_net - 5000) / 6.7,
+        )
+
+        fields["direct_buyer_bid_cny_per_ton"] = ""
+        fields["quality_discount_basis"] = "net"
+        fields["duty_percent"] = "5"
+        fields["import_vat_recoverable_percent"] = "50"
+        fields["supplier_quote_usd_per_ton"] = ""
+        response = self.request(
+            "/api/sudan-cotton-pricing",
+            "POST",
+            json.dumps(fields).encode(),
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.code, 200)
+        result = json.loads(response.read())
+        cost_factor = 1 + 0.05 + (1 - 0.5) * 0.09 * (1 + 0.05)
+        self.assertAlmostEqual(
+            result["max_target_cif_cny_per_ton"],
+            (15360 / 1.09 - 500 - 5000) / cost_factor,
+        )
+
+    def test_sudan_cotton_pricing_rejects_invalid_recoverability(self):
+        fields = {
+            "direct_buyer_bid_cny_per_ton": "",
+            "buyer_bid_vat_inclusive": "true",
+            "domestic_benchmark_cny_per_ton": "15360",
+            "benchmark_vat_inclusive": "true",
+            "quality_discount_cny_per_ton": "500",
+            "quality_discount_basis": "gross",
+            "domestic_sales_vat_percent": "9",
+            "fx_cny_per_usd": "6.7",
+            "duty_percent": "0",
+            "import_vat_percent": "9",
+            "import_vat_recoverable_percent": "101",
+            "quota_cost_cny_per_ton": "4200",
+            "quota_recoverable_vat_cny_per_ton": "0",
+            "other_nonrecoverable_cost_cny_per_ton": "500",
+            "other_recoverable_vat_cny_per_ton": "0",
+            "target_profit_cny_per_ton": "300",
+            "supplier_quote_usd_per_ton": "",
+            "supplier_quote_basis": "CIF",
+            "ocean_freight_usd_per_ton": "0",
+            "insurance_usd_per_ton": "0",
+            "other_cif_cost_usd_per_ton": "0",
+            "quantity_tons": "",
+        }
+        response = self.request(
+            "/api/sudan-cotton-pricing?locale=en",
+            "POST",
+            json.dumps(fields).encode(),
+            {"Content-Type": "application/json"},
+        )
+
+        self.assertEqual(response.code, 400)
+        error = json.loads(response.read())["error"]
+        self.assertEqual(error["code"], "invalid_pricing_input")
+        self.assertIn("recoverable shares", error["message"])
 
     def test_market_history_returns_yahoo_ohlc_candles(self):
         history = {
