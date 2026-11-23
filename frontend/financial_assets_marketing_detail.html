@@ -23,6 +23,15 @@
 		.price-label { color: #68758a; font-size: 14px; }
 		.price-value { font-size: clamp(25px, 5vw, 36px); font-weight: 700; }
 		.price-date { color: #68758a; font-size: 14px; }
+		.cc-index-panel { margin: 20px 0 24px; padding: 18px; background: #f5f8f7; border: 1px solid #dfe8e5; border-radius: 10px; }
+		.cc-index-panel h2 { margin: 0 0 12px; font-size: 18px; }
+		.cc-index-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+		.cc-index-quote { display: block; min-width: 0; padding: 12px; color: inherit; background: #fff; border: 1px solid #dfe8e5; border-radius: 8px; text-decoration: none; }
+		.cc-index-quote:hover, .cc-index-quote:focus-visible { border-color: #9dc9c2; outline: 2px solid #087f7030; }
+		.cc-index-quote span, .cc-index-quote strong { display: block; }
+		.cc-index-name, .cc-index-date { color: #68758a; font-size: 13px; }
+		.cc-index-value { margin: 6px 0; color: #087f70; font-size: 19px; overflow-wrap: anywhere; }
+		.cc-index-source { margin: 12px 0 0; color: #68758a; font-size: 13px; }
 		.derived-panel { margin: -4px 0 24px; padding: 18px; background: #f5f8f7; border: 1px solid #dfe8e5; border-radius: 10px; }
 		.derived-panel h2 { margin: 0 0 8px; font-size: 18px; }
 		.derived-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
@@ -32,6 +41,7 @@
 		.sudan-fields label { display: block; margin-bottom: 6px; color: #46546a; font-size: 13px; font-weight: 600; }
 		.sudan-fields input, .sudan-fields select { width: 100%; min-height: 42px; padding: 8px 10px; color: #233047; background: #fff; border: 1px solid #cbd6d3; border-radius: 7px; font: inherit; }
 		.sudan-results { margin-top: 20px; }
+		.book-order { margin: 0 0 16px; padding: 10px 16px; color: #fff; background: #087f70; border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
 		.sudan-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 		.sudan-metric { padding: 14px; background: #fff; border: 1px solid #dfe8e5; border-radius: 8px; }
 		.sudan-metric span { display: block; color: #68758a; font-size: 13px; }
@@ -58,6 +68,7 @@
 		.quotation-panel td:last-child { min-width: 220px; max-width: 360px; white-space: normal; overflow-wrap: anywhere; }
 		.quotation-status { color: #68758a; font-size: 14px; }
 		.quotation-status:empty { display: none; }
+		.quotation-manage { display: inline-block; margin-top: 16px; color: #087f70; font-weight: 600; }
 		.chart-panel { padding: 22px; background: #fbfcfd; border: 1px solid #e7eceb; border-radius: 12px; }
 		.chart-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 		.chart-heading h2 { margin: 0; font-size: 20px; }
@@ -88,6 +99,7 @@
 			.card { padding: 22px; }
 			.chart-panel { padding: 16px; }
 			.chart-heading { align-items: flex-start; flex-direction: column; }
+			.cc-index-grid { grid-template-columns: 1fr; }
 			.derived-fields { grid-template-columns: 1fr; }
 			.sudan-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 		}
@@ -118,6 +130,27 @@
 				<strong class="price-value" id="market-history-latest" data-i18n="market.loading"></strong>
 				<span class="price-date" id="market-history-date"></span>
 			</div>
+			<section class="cc-index-panel" id="market-cc-index-panel" hidden aria-labelledby="market-cc-index-heading">
+				<h2 id="market-cc-index-heading" data-i18n="market.cc_index_title"></h2>
+				<div class="cc-index-grid" aria-live="polite">
+					<a class="cc-index-quote" data-cc-index="cc_index_3128b" href="financial_assets_marketing_detail.html?asset=cc_index_3128b&amp;return=index">
+						<span class="cc-index-name" data-i18n="market.cc_index_3128b"></span>
+						<strong class="cc-index-value" data-cc-index-value data-i18n="market.loading"></strong>
+						<span class="cc-index-date" data-cc-index-date></span>
+					</a>
+					<a class="cc-index-quote" data-cc-index="cc_index_2227b" href="financial_assets_marketing_detail.html?asset=cc_index_2227b&amp;return=index">
+						<span class="cc-index-name" data-i18n="market.cc_index_2227b"></span>
+						<strong class="cc-index-value" data-cc-index-value data-i18n="market.loading"></strong>
+						<span class="cc-index-date" data-cc-index-date></span>
+					</a>
+					<a class="cc-index-quote" data-cc-index="cc_index_2129b" href="financial_assets_marketing_detail.html?asset=cc_index_2129b&amp;return=index">
+						<span class="cc-index-name" data-i18n="market.cc_index_2129b"></span>
+						<strong class="cc-index-value" data-cc-index-value data-i18n="market.loading"></strong>
+						<span class="cc-index-date" data-cc-index-date></span>
+					</a>
+				</div>
+				<p class="cc-index-source" data-i18n="market.cc_index_source"></p>
+			</section>
 			<section class="derived-panel" id="market-import-cotton-panel" hidden aria-labelledby="market-import-cotton-heading">
 				<h2 id="market-import-cotton-heading" data-i18n="market.import_cotton_price"></h2>
 				<div class="derived-fields">
@@ -169,6 +202,8 @@
 				</div>
 				<p class="notice" id="sudan-cotton-pricing-status" role="status"></p>
 				<div class="sudan-results" id="sudan-cotton-pricing-results" hidden>
+					<button class="book-order" id="sudan-book-order" type="button" data-i18n="order.create_button"></button>
+					<a href="order.html" data-i18n="order.list_title"></a>
 					<div class="sudan-metrics">
 						<div class="sudan-metric"><span data-i18n="market.sudan_max_target_price"></span><strong id="sudan-max-target-price"></strong></div>
 						<div class="sudan-metric"><span data-i18n="market.sudan_break_even_price"></span><strong id="sudan-break-even-price"></strong></div>
@@ -207,6 +242,7 @@
 				<h2 id="cotton-quotation-heading" data-i18n="market.cotton_data_title"></h2>
 				<p class="quotation-status" id="cotton-quotation-status" role="status"></p>
 				<div id="cotton-quotation-tables"></div>
+				<a class="quotation-manage" href="quotations.html" data-i18n="quotation.view_manage"></a>
 			</section>
 			<section class="chart-panel" id="market-history-panel" aria-labelledby="market-history-heading">
 				<div class="chart-heading">

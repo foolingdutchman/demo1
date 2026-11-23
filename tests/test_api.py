@@ -1,5 +1,6 @@
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from http.cookiejar import CookieJar
 from http.server import HTTPServer
@@ -16,6 +17,7 @@ import ai_analysis
 import api_server
 import db_manager
 import excel_analysis
+import order_manager
 import pandas as pd
 from openpyxl import Workbook
 
@@ -74,6 +76,62 @@ class ApiIntegrationTests(unittest.TestCase):
             {"ai_analysis", "ai_model", "ai_analyzed_at"}.issubset(columns)
         )
 
+    def test_quotation_date_column_is_created_and_migrated(self):
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            columns = {
+                row[1]: row[2]
+                for row in connection.execute("PRAGMA table_info(cotton_quotation_summary)")
+            }
+        self.assertEqual(columns["quotation_date"], "TEXT")
+
+        legacy_database = Path(self.temp_dir.name) / "legacy_quotations.db"
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE cotton_quotation_summary "
+                "(row_number INTEGER PRIMARY KEY, batch_number TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO cotton_quotation_summary VALUES (1, 'existing')"
+            )
+
+        with patch.object(db_manager, "DATABASE_PATH", legacy_database):
+            db_manager.initialize_database()
+            with closing(sqlite3.connect(legacy_database)) as connection, connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT batch_number, quotation_date FROM cotton_quotation_summary"
+                    ).fetchone(),
+                    ("existing", None),
+                )
+
+                connection.execute(
+                    "UPDATE cotton_quotation_summary SET quotation_date = ?",
+                    ("2026-11-23",),
+                )
+            db_manager.initialize_database()
+
+        with closing(sqlite3.connect(legacy_database)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT batch_number, quotation_date FROM cotton_quotation_summary"
+                ).fetchone(),
+                ("existing", "2026-11-23"),
+            )
+
+    def test_delivery_date_migration_preserves_existing_orders(self):
+        legacy_database = Path(self.temp_dir.name) / "legacy_orders.db"
+        with closing(sqlite3.connect(legacy_database)) as connection, connection:
+            connection.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, created_at TEXT)")
+            connection.execute("INSERT INTO orders VALUES (1, '2026-01-01')")
+        with patch.object(db_manager, "DATABASE_PATH", legacy_database):
+            db_manager.initialize_database()
+            db_manager.initialize_database()
+        with closing(sqlite3.connect(legacy_database)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT id, created_at, delivery_date FROM orders").fetchone(),
+                (1, "2026-01-01", None),
+            )
+
     def test_cotton_quotation_workbook_is_imported_once_for_authenticated_users(self):
         workbook_path = Path(self.temp_dir.name) / "cotton_quotation.xlsx"
         workbook = Workbook()
@@ -125,6 +183,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(set(sheets), {"quotation_summary"})
         self.assertEqual(len(sheets["quotation_summary"]), 1)
         self.assertEqual(sheets["quotation_summary"][0]["batch_number"], "000123")
+        self.assertIsNone(sheets["quotation_summary"][0]["quotation_date"])
         self.assertEqual(sheets["quotation_summary"][0]["gross_price_cny_per_ton"], 17700)
         self.assertEqual(
             sheets["quotation_summary"][0]["source_filename"],
@@ -139,6 +198,30 @@ class ApiIntegrationTests(unittest.TestCase):
                 )
             }
         self.assertEqual(tables, {"cotton_quotation_summary"})
+
+    def test_existing_quotation_dates_are_backfilled_only_when_missing(self):
+        upload_id, _ = db_manager.create_upload(
+            None, "quote.xlsx", "application/octet-stream", b"test"
+        )
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            connection.execute(
+                "UPDATE uploads SET uploaded_at = ? WHERE id = ?",
+                ("2025-01-02 23:59:59", upload_id),
+            )
+            connection.execute("DELETE FROM cotton_quotation_summary")
+            connection.executemany(
+                "INSERT INTO cotton_quotation_summary "
+                "(row_number, source_upload_id, quotation_date) VALUES (?, ?, ?)",
+                [(1, upload_id, None), (2, upload_id, "2024-12-31"), (3, None, None)],
+            )
+
+        db_manager.initialize_database()
+        db_manager.initialize_database()
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            dates = connection.execute(
+                "SELECT quotation_date FROM cotton_quotation_summary ORDER BY row_number"
+            ).fetchall()
+        self.assertEqual(dates, [("2025-01-02",), ("2024-12-31",), (None,)])
 
     def test_analyzing_cotton_excel_imports_rows_idempotently(self):
         self.assertEqual(self.request("/api/cotton-quotations").code, 401)
@@ -160,6 +243,11 @@ class ApiIntegrationTests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         upload_id = json.loads(upload_response.read())["upload"]["id"]
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            connection.execute(
+                "UPDATE uploads SET uploaded_at = ? WHERE id = ?",
+                ("2025-01-02 23:59:59", upload_id),
+            )
 
         response = self.request(f"/api/uploads/{upload_id}?analyze=1")
         self.assertEqual(response.code, 200)
@@ -188,15 +276,19 @@ class ApiIntegrationTests(unittest.TestCase):
         imported_rows = quotations["sheets"]["quotation_summary"]
         self.assertEqual(
             [row["batch_number"] for row in imported_rows if row["source_filename"] == "cotton_upload.xlsx"],
-            ["000200", "000201"],
+            ["000201", "000200"],
+        )
+        self.assertEqual(
+            [row["quotation_date"] for row in imported_rows if row["source_filename"] == "cotton_upload.xlsx"],
+            ["2025-01-02", "2025-01-02"],
         )
         with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
-            count = connection.execute(
-                "SELECT COUNT(*) FROM cotton_quotation_summary "
-                "WHERE source_upload_id = ?",
+            dates = connection.execute(
+                "SELECT quotation_date FROM cotton_quotation_summary "
+                "WHERE source_upload_id = ? ORDER BY row_number",
                 (upload_id,),
-            ).fetchone()[0]
-        self.assertEqual(count, 2)
+            ).fetchall()
+        self.assertEqual(dates, [("2025-01-02",), ("2025-01-02",)])
 
         self.assertEqual(self.request("/api/logout", "POST").code, 200)
         second_user = {
@@ -219,8 +311,304 @@ class ApiIntegrationTests(unittest.TestCase):
         )["sheets"]["quotation_summary"]
         self.assertEqual(
             [row["batch_number"] for row in second_user_data if row["source_filename"] == "cotton_upload.xlsx"],
-            ["000200", "000201"],
+            ["000201", "000200"],
         )
+
+    def test_quotation_management_orders_and_restricts_updates(self):
+        headers = {"Content-Type": "application/json"}
+        update = json.dumps({
+            "quotation_date": "2026-03-04",
+            "gross_price_cny_per_ton": "18300.5",
+            "batch_number": "000007",
+        }).encode()
+        self.assertEqual(self.request(
+            "/api/cotton-quotations/1", "PATCH", update, headers
+        ).code, 401)
+        self.assertEqual(self.register().code, 201)
+        upload_response = self.upload("quote.xlsx", b"test", "application/octet-stream")
+        upload_id = json.loads(upload_response.read())["upload"]["id"]
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            connection.execute("DELETE FROM cotton_quotation_summary")
+            connection.executemany(
+                "INSERT INTO cotton_quotation_summary "
+                "(row_number, batch_number, quotation_date, source_upload_id) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    (1, "old", "2024-01-01", upload_id),
+                    (2, "same-first", "2025-01-02", upload_id),
+                    (3, "same-second", "2025-01-02", upload_id),
+                    (4, "newest", "2026-01-01", upload_id),
+                    (5, "middle", "2025-12-01", upload_id),
+                    (6, "undated", None, None),
+                ],
+            )
+        records = json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"]
+        self.assertEqual([row["row_number"] for row in records], [4, 5, 3, 2, 1, 6])
+        self.assertTrue(records[0]["editable"])
+        self.assertFalse(records[-1]["editable"])
+
+        for invalid in (
+            {"quotation_date": "2025-02-29"},
+            {"quotation_date": ""},
+            {"package_count": "1.5"},
+            {"package_count": "9223372036854775808"},
+            {"gross_price_cny_per_ton": "NaN"},
+            {"source_upload_id": "1"},
+            {},
+        ):
+            response = self.request(
+                "/api/cotton-quotations/5", "PATCH",
+                json.dumps(invalid).encode(), headers,
+            )
+            self.assertEqual(response.code, 400, invalid)
+        self.assertEqual(self.request(
+            "/api/cotton-quotations/6", "PATCH", update, headers
+        ).code, 404)
+        self.assertEqual(self.request(
+            "/api/cotton-quotations/999", "PATCH", update, headers
+        ).code, 404)
+        self.assertEqual(self.request(
+            "/api/cotton-quotations/5", "PATCH", update, headers
+        ).code, 200)
+        updated = json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"][0]
+        self.assertEqual(updated["row_number"], 5)
+        self.assertEqual(updated["batch_number"], "000007")
+        self.assertEqual(updated["gross_price_cny_per_ton"], 18300.5)
+        self.assertEqual(updated["quotation_date"], "2026-03-04")
+        self.assertEqual(updated["source_filename"], None)
+
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+        other = {"mode": "register", "username": "other_user", "password": "SecretPass123",
+                 "confirm_password": "SecretPass123"}
+        self.assertEqual(self.request("/api/auth", "POST", json.dumps(other).encode(), headers).code, 201)
+        self.assertEqual(self.request(
+            "/api/cotton-quotations/5", "PATCH", update, headers
+        ).code, 404)
+        records = json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"]
+        self.assertFalse(any(row["editable"] for row in records))
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT batch_number, quotation_date, gross_price_cny_per_ton "
+                "FROM cotton_quotation_summary WHERE row_number = 5"
+            ).fetchone(), ("000007", "2026-03-04", 18300.5))
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+        owner = {"mode": "login", "username": "api_test_user", "password": "SecretPass123"}
+        self.assertEqual(self.request("/api/auth", "POST", json.dumps(owner).encode(), headers).code, 200)
+        self.assertEqual(self.request(f"/api/uploads/{upload_id}", "DELETE").code, 200)
+        self.assertEqual(self.request(
+            "/api/cotton-quotations/5", "PATCH", update, headers
+        ).code, 404)
+        preflight = self.request("/api/cotton-quotations/5", "OPTIONS")
+        self.assertIn("PATCH", preflight.headers["Access-Control-Allow-Methods"])
+
+    def test_create_order_saves_quote_and_recalculated_pricing(self):
+        headers = {"Content-Type": "application/json"}
+        pricing = {
+            "direct_buyer_bid_cny_per_ton": "", "buyer_bid_vat_inclusive": "true",
+            "domestic_benchmark_cny_per_ton": "15360", "benchmark_vat_inclusive": "true",
+            "quality_discount_cny_per_ton": "500", "quality_discount_basis": "gross",
+            "domestic_sales_vat_percent": "9", "fx_cny_per_usd": "6.7",
+            "duty_percent": "0", "import_vat_percent": "9",
+            "import_vat_recoverable_percent": "100", "quota_cost_cny_per_ton": "4200",
+            "quota_recoverable_vat_cny_per_ton": "0", "other_nonrecoverable_cost_cny_per_ton": "500",
+            "other_recoverable_vat_cny_per_ton": "0", "target_profit_cny_per_ton": "300",
+            "supplier_quote_usd_per_ton": "1150", "supplier_quote_basis": "FOB",
+            "ocean_freight_usd_per_ton": "40", "insurance_usd_per_ton": "5",
+            "other_cif_cost_usd_per_ton": "5", "quantity_tons": "100",
+        }
+        fields = {f"pricing_{key}": value for key, value in pricing.items()}
+        fields.update({
+            "benchmark_source": "manual",
+            "delivery_date": "2026-12-10",
+            "quotation_batch_number": "000123",
+            "quotation_origin": "苏丹",
+            "quotation_quotation_date": "2026-11-23",
+            "quotation_source_filename": "quote.xlsx",
+        })
+        body = lambda data: json.dumps(data).encode()
+        self.assertEqual(self.request("/api/orders").code, 401)
+        self.assertEqual(self.request("/api/orders/1").code, 401)
+        self.assertEqual(self.request("/api/orders/1", "DELETE").code, 401)
+        self.assertEqual(self.request("/api/orders/1", "PATCH", body({}), headers).code, 401)
+        self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 401)
+        self.assertEqual(self.register().code, 201)
+        self.assertEqual(json.loads(self.request("/api/orders").read()), {"orders": []})
+        quotations = json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"]
+        fields["quotation_id"] = str(quotations[0]["row_number"])
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            connection.execute(
+                "UPDATE cotton_quotation_summary SET batch_number=?, origin=?, quotation_date=?, "
+                "source_filename=?, net_weight_tons=? WHERE row_number=?",
+                ("original", "苏丹", "2026-11-23", "quote.xlsx", 100, int(fields["quotation_id"])),
+            )
+        for invalid in (
+            {**fields, "pricing_quantity_tons": ""},
+            {**fields, "pricing_quantity_tons": "-1"},
+            {**fields, "pricing_supplier_quote_usd_per_ton": "0"},
+            {**fields, "pricing_quantity_tons": "99"},
+            {**fields, "quotation_quotation_date": "2026-02-30"},
+            {**fields, "quotation_quotation_date": ""},
+            {**fields, "delivery_date": ""},
+            {**fields, "delivery_date": "2026-02-30"},
+            {**fields, "quotation_id": "999999"},
+            {**fields, "unexpected": "value"},
+        ):
+            self.assertEqual(self.request("/api/orders", "POST", body(invalid), headers).code, 400)
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0], 0)
+        response = self.request("/api/orders", "POST", body(fields), headers)
+        self.assertEqual(response.code, 201)
+        order_id = json.loads(response.read())["order"]["id"]
+        db_manager.initialize_database()
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            row = connection.execute(
+                "SELECT user_id, source_quotation_id, batch_number, origin, quotation_date, "
+                "source_filename, quantity_tons, supplier_price_usd_per_ton, "
+                "supplier_quote_basis, pricing_inputs, pricing_result "
+                "FROM orders WHERE id = ?", (order_id,)
+            ).fetchone()
+            original_batch = connection.execute(
+                "SELECT batch_number FROM cotton_quotation_summary WHERE row_number = ?",
+                (int(fields["quotation_id"]),),
+            ).fetchone()[0]
+        self.assertEqual(row[1:9], (int(fields["quotation_id"]), "original", "苏丹",
+                                   "2026-11-23", "quote.xlsx", 100, 1150, "FOB"))
+        self.assertEqual(json.loads(row[9]), pricing)
+        self.assertEqual(json.loads(row[10])["supplier_evaluation"]["cif_usd_per_ton"], 1200)
+        self.assertIsNotNone(row[0])
+        self.assertEqual(original_batch, "original")
+        self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 409)
+        quotations = json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"]
+        self.assertTrue(next(q for q in quotations if q["row_number"] == int(fields["quotation_id"]))["ordered"])
+        manual = {**fields, "quotation_id": ""}
+        manual_response = self.request("/api/orders", "POST", body(manual), headers)
+        self.assertEqual(manual_response.code, 201)
+        manual_id = json.loads(manual_response.read())["order"]["id"]
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            manual_row = connection.execute(
+                "SELECT source_quotation_id, quotation_date FROM orders ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNotNone(manual_row[0])
+        self.assertEqual(manual_row[1], "2026-11-23")
+        manual_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == manual_row[0])
+        self.assertTrue(manual_quote["ordered"])
+        self.assertTrue(manual_quote["editable"])
+        self.assertEqual(manual_quote["net_weight_tons"], 100)
+        self.assertEqual(manual_quote["batch_number"], "000123")
+        orders = json.loads(self.request("/api/orders").read())["orders"]
+        self.assertEqual([order["id"] for order in orders], [manual_id, order_id])
+        self.assertEqual(orders[1]["batch_number"], "original")
+        self.assertEqual(orders[1]["source_filename"], "quote.xlsx")
+        self.assertEqual(orders[1]["pricing_inputs"], pricing)
+        self.assertEqual(orders[1]["delivery_date"], "2026-12-10")
+        self.assertEqual(orders[1]["pricing_result"]["supplier_evaluation"]["cif_usd_per_ton"], 1200)
+        self.assertNotIn("user_id", orders[1])
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+        other_user = {
+            "mode": "register", "username": "other_user",
+            "password": "SecretPass123", "confirm_password": "SecretPass123",
+        }
+        self.assertEqual(self.request("/api/auth", "POST", body(other_user), headers).code, 201)
+        self.assertEqual(json.loads(self.request("/api/orders").read()), {"orders": []})
+        stored_order = orders[1]
+        update_fields = {key: value for key, value in fields.items() if key != "quotation_id"}
+        for name in (*order_manager.quotation_manager.QUOTATION_TYPES, *order_manager.SOURCE_FIELDS):
+            value = stored_order[name]
+            update_fields[f"quotation_{name}"] = "" if value is None else str(value)
+        self.assertEqual(self.request(f"/api/orders/{order_id}").code, 404)
+        self.assertEqual(self.request(f"/api/orders/{order_id}", "PATCH", body(update_fields), headers).code, 404)
+        self.assertEqual(self.request(f"/api/orders/{order_id}", "DELETE").code, 404)
+        other_manual_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == manual_row[0])
+        self.assertFalse(other_manual_quote["editable"])
+        self.assertEqual(self.request(f"/api/cotton-quotations/{manual_row[0]}", "PATCH", body({"batch_number": "other"}), headers).code, 404)
+        self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 409)
+        self.assertEqual(self.request("/api/orders", "POST", body(manual), headers).code, 201)
+        self.assertEqual(len(json.loads(self.request("/api/orders").read())["orders"]), 1)
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+        self.assertEqual(self.request("/api/auth", "POST", body({
+            "mode": "login", "username": "api_test_user", "password": "SecretPass123",
+        }), headers).code, 200)
+        self.assertEqual(
+            [order["id"] for order in json.loads(self.request("/api/orders").read())["orders"]],
+            [manual_id, order_id],
+        )
+        self.assertEqual(json.loads(self.request(f"/api/orders/{order_id}").read())["order"]["id"], order_id)
+        edited = {
+            **update_fields, "quotation_batch_number": "snapshot-edited",
+            "quotation_quotation_date": "2026-11-25", "delivery_date": "2026-12-20",
+            "pricing_supplier_quote_usd_per_ton": "1200",
+            "pricing_quantity_tons": "125",
+        }
+        self.assertEqual(self.request(f"/api/orders/{order_id}", "PATCH", body({**edited, "delivery_date": ""}), headers).code, 400)
+        self.assertEqual(self.request(f"/api/orders/{order_id}", "PATCH", body(edited), headers).code, 200)
+        edited_order = json.loads(self.request(f"/api/orders/{order_id}").read())["order"]
+        self.assertEqual((edited_order["batch_number"], edited_order["delivery_date"], edited_order["quantity_tons"]), ("snapshot-edited", "2026-12-20", 125))
+        self.assertEqual(edited_order["pricing_result"]["supplier_evaluation"]["cif_usd_per_ton"], 1250)
+        original_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == int(fields["quotation_id"]))
+        self.assertEqual(original_quote["batch_number"], "original")
+        self.assertEqual(original_quote["quotation_date"], "2026-11-23")
+        self.assertEqual(self.request(
+            f"/api/cotton-quotations/{manual_row[0]}", "PATCH",
+            body({"batch_number": "owner-edited"}), headers,
+        ).code, 200)
+        db_manager.initialize_database()
+        manual_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == manual_row[0])
+        self.assertEqual(manual_quote["batch_number"], "owner-edited")
+        self.assertTrue(manual_quote["ordered"])
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            ids = []
+            for net, standard in ((0, 90), (None, None)):
+                ids.append(connection.execute(
+                    "INSERT INTO cotton_quotation_summary (net_weight_tons, standard_weight_tons) VALUES (?, ?)",
+                    (net, standard),
+                ).lastrowid)
+        fallback = {**fields, "quotation_id": str(ids[0])}
+        self.assertEqual(self.request("/api/orders", "POST", body(fallback), headers).code, 400)
+        self.assertEqual(self.request("/api/orders", "POST", body({
+            **fallback, "pricing_quantity_tons": "90",
+        }), headers).code, 201)
+        no_weight = {**fields, "quotation_id": str(ids[1]), "pricing_quantity_tons": "77"}
+        self.assertEqual(self.request("/api/orders", "POST", body(no_weight), headers).code, 201)
+        new_order = json.loads(self.request("/api/orders").read())["orders"][0]
+        self.assertEqual(new_order["quantity_tons"], 77)
+        self.assertIsNone(new_order["net_weight_tons"])
+        self.assertEqual(new_order["quotation_date"], "2026-11-23")
+        quote_without_date = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == ids[1])
+        self.assertIsNone(quote_without_date["quotation_date"])
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            before = connection.execute("SELECT COUNT(*) FROM cotton_quotation_summary").fetchone()[0]
+            connection.execute(
+                "CREATE TRIGGER reject_test_order BEFORE INSERT ON orders "
+                "BEGIN SELECT RAISE(ABORT, 'test failure'); END"
+            )
+        self.assertEqual(self.request("/api/orders", "POST", body(manual), headers).code, 500)
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM cotton_quotation_summary").fetchone()[0], before)
+            connection.execute("DROP TRIGGER reject_test_order")
+            race_id = connection.execute(
+                "INSERT INTO cotton_quotation_summary (batch_number) VALUES (?)", ("race",)
+            ).lastrowid
+        race_fields = {**fields, "quotation_id": str(race_id)}
+        barrier = threading.Barrier(2)
+        def place_order():
+            barrier.wait(timeout=5)
+            try:
+                order_manager.create_order(1, race_fields)
+            except db_manager.QuotationAlreadyOrdered:
+                return "duplicate"
+            return "created"
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: place_order(), range(2)))
+        self.assertCountEqual(results, ["created", "duplicate"])
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            self.assertEqual(connection.execute(
+                "SELECT COUNT(*) FROM orders WHERE source_quotation_id = ?", (race_id,)
+            ).fetchone()[0], 1)
+        self.assertEqual(self.request(f"/api/orders/{order_id}", "DELETE").code, 200)
+        self.assertEqual(self.request(f"/api/orders/{order_id}").code, 404)
+        released = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == int(fields["quotation_id"]))
+        self.assertFalse(released["ordered"])
+        self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 201)
 
     def test_analyzing_luidao_fuzhong_cotton_headers_imports_rows(self):
         self.assertEqual(self.register().code, 201)

@@ -15,7 +15,9 @@ import ai_analysis
 import auth_manager
 import db_manager
 import image_analysis
+import order_manager
 import outcall_api
+import quotation_manager
 import sudan_cotton_pricing
 from ai_analysis import TEXT_EXTENSIONS, decode_text_file
 from excel_analysis import EXCEL_EXTENSIONS, ExcelAnalysisError, build_excel_analysis
@@ -267,9 +269,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         self._send_json(result)
 
-    def _handle_cotton_quotations(self):
+    def _handle_cotton_quotations(self, user_id):
         try:
-            sheets = db_manager.get_cotton_quotations()
+            sheets = db_manager.get_cotton_quotations(user_id)
         except db_manager.DatabaseError:
             logging.exception("Could not read cotton quotations")
             self._send_error_json(
@@ -279,6 +281,95 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_json({"sheets": sheets})
+
+    def _handle_update_cotton_quotation(self, row_number, user_id):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            values = quotation_manager.validate_fields(fields)
+        except (ValueError, OverflowError):
+            self._send_error_json(400, "invalid_quotation", self._t("quotation.invalid"))
+            return
+        try:
+            updated = db_manager.update_cotton_quotation(row_number, user_id, values)
+        except db_manager.DatabaseError:
+            logging.exception("Could not update cotton quotation")
+            self._send_error_json(500, "database_error", self._t("request.database_read_error"))
+            return
+        if not updated:
+            self._send_error_json(404, "quotation_not_found", self._t("quotation.not_editable"))
+            return
+        self._send_json({"ok": True})
+
+    def _handle_create_order(self, user_id):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            order_id = order_manager.create_order(user_id, fields)
+        except db_manager.QuotationAlreadyOrdered:
+            self._send_error_json(409, "quotation_already_ordered", self._t("order.already_ordered"))
+            return
+        except (ValueError, OverflowError):
+            self._send_error_json(400, "invalid_order", self._t("order.invalid"))
+            return
+        except db_manager.DatabaseError:
+            logging.exception("Could not save order")
+            self._send_error_json(500, "database_error", self._t("order.save_failed"))
+            return
+        self._send_json({"order": {"id": order_id}}, 201)
+
+    def _handle_list_orders(self, user_id, order_id=None):
+        try:
+            orders = db_manager.list_orders(user_id, order_id)
+        except (db_manager.DatabaseError, json.JSONDecodeError):
+            logging.exception("Could not read orders")
+            self._send_error_json(500, "database_error", self._t("request.database_read_error"))
+            return
+        if order_id is not None:
+            if not orders:
+                self._send_error_json(404, "order_not_found", self._t("order.not_found"))
+                return
+            self._send_json({"order": orders[0]})
+        else:
+            self._send_json({"orders": orders})
+
+    def _handle_update_order(self, user_id, order_id):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            updated = order_manager.update_order(user_id, order_id, fields)
+        except (ValueError, OverflowError):
+            self._send_error_json(400, "invalid_order", self._t("order.invalid"))
+            return
+        except db_manager.DatabaseError:
+            logging.exception("Could not update order")
+            self._send_error_json(500, "database_error", self._t("order.save_failed"))
+            return
+        if not updated:
+            self._send_error_json(404, "order_not_found", self._t("order.not_found"))
+            return
+        self._send_json({"ok": True})
+
+    def _handle_delete_order(self, user_id, order_id):
+        try:
+            deleted = db_manager.delete_order(user_id, order_id)
+        except db_manager.DatabaseError:
+            logging.exception("Could not delete order")
+            self._send_error_json(500, "database_error", self._t("request.delete_failed"))
+            return
+        if not deleted:
+            self._send_error_json(404, "order_not_found", self._t("order.not_found"))
+            return
+        self._send_json({"ok": True})
+
+    def _order_id(self, path):
+        match = re.fullmatch(r"/api/orders/([1-9][0-9]{0,18})", path)
+        if match is None or int(match.group(1)) >= 2 ** 63:
+            return None
+        return int(match.group(1))
 
     def _handle_market_history(self, asset):
         try:
@@ -495,7 +586,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         self.send_response(204)
         self._add_cors_headers()
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Content-Length", "0")
@@ -521,7 +612,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/cotton-quotations":
             user = self._require_user()
             if user is not None:
-                self._handle_cotton_quotations()
+                self._handle_cotton_quotations(user[0])
+            return
+        if parsed.path == "/api/orders":
+            user = self._require_user()
+            if user is not None:
+                self._handle_list_orders(user[0])
+            return
+        order_id = self._order_id(parsed.path)
+        if order_id is not None:
+            user = self._require_user()
+            if user is not None:
+                self._handle_list_orders(user[0], order_id)
             return
         if parsed.path == "/api/session":
             try:
@@ -657,6 +759,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/logout":
             self._handle_logout()
             return
+        if parsed.path == "/api/orders":
+            user = self._require_user()
+            if user is not None:
+                self._handle_create_order(user[0])
+            return
         ai_analysis_upload_id = self._upload_id(
             parsed.path,
             "/ai-analysis",
@@ -673,8 +780,34 @@ class ApiHandler(BaseHTTPRequestHandler):
         if user is not None:
             self._handle_upload(user[0])
 
+    def do_PATCH(self):
+        parsed = urlsplit(self.path)
+        order_id = self._order_id(parsed.path)
+        if order_id is not None:
+            user = self._require_user()
+            if user is not None:
+                self._handle_update_order(user[0], order_id)
+            return
+        match = re.fullmatch(r"/api/cotton-quotations/([1-9][0-9]{0,18})", parsed.path)
+        if match is None:
+            self._send_error_json(404, "not_found", self._t("request.page_not_found"))
+            return
+        row_number = int(match.group(1))
+        if row_number >= 2 ** 63:
+            self._send_error_json(404, "not_found", self._t("request.page_not_found"))
+            return
+        user = self._require_user()
+        if user is not None:
+            self._handle_update_cotton_quotation(row_number, user[0])
+
     def do_DELETE(self):
         parsed = urlsplit(self.path)
+        order_id = self._order_id(parsed.path)
+        if order_id is not None:
+            user = self._require_user()
+            if user is not None:
+                self._handle_delete_order(user[0], order_id)
+            return
         upload_id = self._upload_id(parsed.path)
         if upload_id is None:
             self._send_error_json(404, "not_found", self._t("request.file_not_found"))

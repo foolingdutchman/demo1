@@ -1,11 +1,13 @@
 from contextlib import closing
 from pathlib import Path
+import json
 import logging
 import sqlite3
 
 from openpyxl import load_workbook
 
 import excel_analysis
+import quotation_manager
 
 
 DATABASE_PATH = Path(__file__).with_name("uploads.db")
@@ -59,6 +61,36 @@ def initialize_database():
                     f"ALTER TABLE uploads ADD COLUMN {column} {definition}"
                 )
         initialize_cotton_quotations(connection)
+        initialize_orders(connection)
+
+
+def initialize_orders(connection):
+    quotation_columns = ", ".join(
+        f"{column} {kind}"
+        for column, _header, kind in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
+    )
+    connection.execute(
+        f"""CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            source_quotation_id INTEGER,
+            {quotation_columns},
+            quotation_date TEXT,
+            delivery_date TEXT,
+            source_filename TEXT,
+            source_sheet_name TEXT,
+            benchmark_source TEXT NOT NULL,
+            quantity_tons REAL NOT NULL,
+            supplier_price_usd_per_ton REAL NOT NULL,
+            supplier_quote_basis TEXT NOT NULL,
+            pricing_inputs TEXT NOT NULL,
+            pricing_result TEXT NOT NULL
+        )"""
+    )
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(orders)")}
+    if "delivery_date" not in columns:
+        connection.execute("ALTER TABLE orders ADD COLUMN delivery_date TEXT")
 
 
 def initialize_cotton_quotations(connection):
@@ -74,6 +106,7 @@ def initialize_cotton_quotations(connection):
             f"""CREATE TABLE IF NOT EXISTS {sheet_config["table"]} (
                 row_number INTEGER PRIMARY KEY,
                 {column_definitions},
+                quotation_date TEXT,
                 source_upload_id INTEGER,
                 source_sheet_name TEXT,
                 source_row_number INTEGER,
@@ -86,21 +119,25 @@ def initialize_cotton_quotations(connection):
         row[1] for row in connection.execute(f"PRAGMA table_info({summary_table})")
     }
     source_migrations = {
+        "quotation_date": "TEXT",
         "source_upload_id": "INTEGER",
         "source_sheet_name": "TEXT",
         "source_row_number": "INTEGER",
         "source_filename": "TEXT",
+        "owner_user_id": "INTEGER",
     }
     for column, definition in source_migrations.items():
         if column not in table_columns:
             connection.execute(
                 f"ALTER TABLE {summary_table} ADD COLUMN {column} {definition}"
             )
+    backfill_cotton_quotation_dates(connection)
     connection.execute(
         f"""UPDATE {summary_table}
             SET source_sheet_name = COALESCE(source_sheet_name, ?),
                 source_row_number = COALESCE(source_row_number, row_number),
-                source_filename = COALESCE(source_filename, ?)""",
+                source_filename = COALESCE(source_filename, ?)
+            WHERE owner_user_id IS NULL""",
         (excel_analysis.COTTON_QUOTATION_SHEETS[0]["worksheet"], template_path.name),
     )
     connection.execute(
@@ -180,6 +217,23 @@ def initialize_cotton_quotations(connection):
         workbook.close()
 
 
+def backfill_cotton_quotation_dates(connection):
+    table = excel_analysis.COTTON_QUOTATION_SHEETS[0]["table"]
+    connection.execute(
+        f"""UPDATE {table}
+            SET quotation_date = (
+                SELECT date(uploaded_at) FROM uploads
+                WHERE uploads.id = {table}.source_upload_id
+            )
+            WHERE quotation_date IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM uploads
+                  WHERE uploads.id = {table}.source_upload_id
+                    AND date(uploaded_at) IS NOT NULL
+              )"""
+    )
+
+
 def get_current_user(token_hash, now):
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         return connection.execute(
@@ -225,27 +279,165 @@ def delete_session(token_hash):
         )
 
 
-def get_cotton_quotations():
+def get_cotton_quotations(user_id):
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         sheets = {}
         for sheet_config in excel_analysis.COTTON_QUOTATION_SHEETS:
             columns = (
+                "row_number",
                 *(
                     column
                     for column, _header, _column_type in sheet_config["columns"]
                 ),
+                "quotation_date",
                 "source_filename",
                 "source_sheet_name",
             )
             cursor = connection.execute(
-                f"""SELECT {', '.join(columns)}
-                    FROM {sheet_config["table"]}
-                    ORDER BY row_number"""
+                f"""SELECT {', '.join(f'q.{column}' for column in columns)},
+                           CASE WHEN u.user_id = ? OR q.owner_user_id = ? THEN 1 ELSE 0 END,
+                           EXISTS (SELECT 1 FROM orders AS o
+                                   WHERE o.source_quotation_id = q.row_number)
+                    FROM {sheet_config["table"]} AS q
+                    LEFT JOIN uploads AS u ON u.id = q.source_upload_id
+                    ORDER BY q.quotation_date IS NULL, q.quotation_date DESC,
+                             q.row_number DESC""",
+                (user_id, user_id),
             )
             sheets[sheet_config["key"]] = [
-                dict(zip(columns, row)) for row in cursor.fetchall()
+                {**dict(zip(columns, row[:-2])), "editable": bool(row[-2]), "ordered": bool(row[-1])}
+                for row in cursor.fetchall()
             ]
         return sheets
+
+
+def update_cotton_quotation(row_number, user_id, values):
+    allowed = {
+        column for column, _header, _kind
+        in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
+    } | {"quotation_date"}
+    if not values or not values.keys() <= allowed:
+        raise ValueError("Invalid quotation fields")
+    assignments = ", ".join(f"{column} = ?" for column in values)
+    table = excel_analysis.COTTON_QUOTATION_SHEETS[0]["table"]
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            f"""UPDATE {table} SET {assignments}
+                WHERE row_number = ? AND (owner_user_id = ? OR EXISTS (
+                    SELECT 1 FROM uploads
+                    WHERE uploads.id = {table}.source_upload_id AND uploads.user_id = ?
+                ))""",
+            (*values.values(), row_number, user_id, user_id),
+        )
+        return cursor.rowcount
+
+
+def list_orders(user_id, order_id=None):
+    columns = (
+        "id", "created_at", "source_quotation_id",
+        *(column for column, _header, _kind in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]),
+        "quotation_date", "delivery_date", "source_filename", "source_sheet_name", "benchmark_source",
+        "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
+        "pricing_inputs", "pricing_result",
+    )
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        where = "user_id = ?" if order_id is None else "user_id = ? AND id = ?"
+        params = (user_id,) if order_id is None else (user_id, order_id)
+        rows = connection.execute(
+            f"SELECT {', '.join(columns)} FROM orders WHERE {where} ORDER BY id DESC", params,
+        ).fetchall()
+    orders = []
+    for row in rows:
+        order = dict(zip(columns, row))
+        order["pricing_inputs"] = json.loads(order["pricing_inputs"])
+        order["pricing_result"] = json.loads(order["pricing_result"])
+        orders.append(order)
+    return orders
+
+
+def create_order(user_id, quotation_id, quotation, benchmark_source, delivery_date, pricing_inputs,
+                 pricing_result, quantity_tons, supplier_price, quote_basis):
+    allowed = {
+        column for column, _header, _kind
+        in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
+    } | {"quotation_date", "source_filename", "source_sheet_name"}
+    if quotation.keys() != allowed:
+        raise ValueError("Invalid order quotation fields")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if quotation_id is not None:
+            quote_columns = tuple(quotation)
+            row = connection.execute(
+                f"SELECT {', '.join(quote_columns)} FROM cotton_quotation_summary WHERE row_number = ?",
+                (quotation_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Quotation not found")
+            if connection.execute(
+                "SELECT 1 FROM orders WHERE source_quotation_id = ?", (quotation_id,),
+            ).fetchone():
+                raise QuotationAlreadyOrdered("Quotation already ordered")
+            submitted_date = quotation["quotation_date"]
+            quotation = dict(zip(quote_columns, row))
+            quotation["quotation_date"] = quotation["quotation_date"] or submitted_date
+            quotation_manager.validate_fields({"quotation_date": quotation["quotation_date"]})
+            weight = next(
+                (quotation[name] for name in ("net_weight_tons", "standard_weight_tons")
+                 if isinstance(quotation[name], (int, float)) and quotation[name] > 0),
+                None,
+            )
+            if weight is not None and quantity_tons != weight:
+                raise ValueError("Quantity must match quotation weight")
+        else:
+            quotation["net_weight_tons"] = quantity_tons
+            quote_columns = tuple(quotation)
+            cursor = connection.execute(
+                f"INSERT INTO cotton_quotation_summary ({', '.join(quote_columns)}, owner_user_id) "
+                f"VALUES ({', '.join('?' for _ in quote_columns)}, ?)",
+                (*quotation.values(), user_id),
+            )
+            quotation_id = cursor.lastrowid
+        columns = (
+            "user_id", "source_quotation_id", *quotation.keys(), "benchmark_source", "delivery_date",
+            "pricing_inputs", "pricing_result", "quantity_tons",
+            "supplier_price_usd_per_ton", "supplier_quote_basis",
+        )
+        cursor = connection.execute(
+            f"INSERT INTO orders ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            (
+                user_id, quotation_id, *quotation.values(), benchmark_source, delivery_date,
+                pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis,
+            ),
+        )
+        return cursor.lastrowid
+
+
+def update_order(user_id, order_id, quotation, benchmark_source, delivery_date,
+                 pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis):
+    columns = (
+        *quotation.keys(), "benchmark_source", "delivery_date", "pricing_inputs",
+        "pricing_result", "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
+    )
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            f"UPDATE orders SET {', '.join(f'{column} = ?' for column in columns)} "
+            "WHERE id = ? AND user_id = ?",
+            (*quotation.values(), benchmark_source, delivery_date, pricing_inputs,
+             pricing_result, quantity_tons, supplier_price, quote_basis, order_id, user_id),
+        )
+        return cursor.rowcount
+
+
+def delete_order(user_id, order_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        return connection.execute(
+            "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
+        ).rowcount
+
+
+class QuotationAlreadyOrdered(ValueError):
+    pass
 
 
 def create_upload(user_id, filename, content_type, file_bytes):
@@ -340,12 +532,19 @@ def import_uploaded_cotton_quotations(upload_id, filename, file_bytes):
                 "already_imported": True,
             }
 
+        upload = connection.execute(
+            "SELECT date(uploaded_at) FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+        if upload is None or upload[0] is None:
+            raise sqlite3.IntegrityError("Upload date is missing or invalid")
+        quotation_date = upload[0]
         first_row_number = connection.execute(
             f"SELECT COALESCE(MAX(row_number), 0) + 1 FROM {table}"
         ).fetchone()[0]
         stored_columns = (
             "row_number",
             *columns,
+            "quotation_date",
             "source_upload_id",
             "source_sheet_name",
             "source_row_number",
@@ -362,6 +561,7 @@ def import_uploaded_cotton_quotations(upload_id, filename, file_bytes):
                 (
                     first_row_number + index,
                     *(values[column] for column in columns),
+                    quotation_date,
                     upload_id,
                     sheet_name,
                     source_row_number,

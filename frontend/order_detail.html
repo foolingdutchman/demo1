@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>订单详情</title>
+	<style>
+		* { box-sizing: border-box; }
+		[hidden] { display: none !important; }
+		body { margin: 0; min-height: 100vh; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
+		header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 8%; background: #fff; }
+		.brand { color: #087f70; font-size: 20px; font-weight: 700; text-decoration: none; }
+		.account { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: #68758a; font-size: 14px; }
+		a { color: #087f70; }
+		button { min-height: 38px; padding: 8px 14px; color: #fff; background: #087f70; border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
+		button:disabled { opacity: .6; cursor: default; }
+		.language-switch { display: flex; gap: 8px; }
+		.language-switch button, .secondary { color: #087f70; background: #f1f5f4; border: 1px solid #dfe8e5; }
+		.delete { color: #a33b31; background: #fff0ed; }
+		main { width: min(1200px, 100%); margin: 4vh auto; padding: 0 24px; }
+		.card { padding: 28px; background: #fff; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; }
+		h1 { margin: 0 0 12px; font-size: clamp(24px, 5vw, 34px); }
+		h2 { margin-top: 28px; font-size: 20px; }
+		.hint { color: #68758a; line-height: 1.6; }
+		.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+		.field { margin: 0; overflow-wrap: anywhere; }
+		dt, label { color: #46546a; font-size: 13px; }
+		dd { margin: 4px 0 0; }
+		label { display: grid; gap: 5px; }
+		input, select { width: 100%; min-height: 38px; padding: 8px; border: 1px solid #cbd6d3; border-radius: 7px; font: inherit; }
+		.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+		.notice { color: #9c2f25; }
+		.status { color: #087f70; }
+		.notice:empty, .status:empty { display: none; }
+		pre { overflow-x: auto; padding: 16px; background: #f8fafc; border-radius: 7px; }
+		footer { margin-top: 28px; color: #8792a4; font-size: 14px; text-align: center; }
+		@media (max-width: 640px) { header { align-items: flex-start; flex-direction: column; } main { padding: 0 16px; } .card { padding: 20px; } }
+	</style>
+</head>
+<body data-page="order-detail">
+	<header>
+		<a class="brand" href="assets.html" data-i18n="site.title"></a>
+		<div class="account">
+			<span id="username"></span>
+			<a href="order.html" data-i18n="order.list_title"></a>
+			<button id="logout-button" type="button" data-i18n="site.logout"></button>
+			<div class="language-switch" id="language-switch"></div>
+		</div>
+	</header>
+	<main>
+		<section class="card">
+			<h1 data-i18n="order.detail_title"></h1>
+			<p class="notice" id="notice" role="alert"></p>
+			<p class="status" id="order-detail-status" role="status"></p>
+			<div id="order-detail-content"></div>
+			<div class="actions" id="order-detail-actions" hidden>
+				<button type="button" id="order-edit" data-i18n="order.edit"></button>
+				<button type="button" class="delete" id="order-delete" data-i18n="order.delete"></button>
+			</div>
+			<form id="order-edit-form" hidden>
+				<p class="hint" data-i18n="order.edit_note"></p>
+				<div id="order-edit-fields"></div>
+				<div class="actions">
+					<button type="submit" id="order-update" data-i18n="order.update"></button>
+					<button type="button" class="secondary" id="order-cancel-edit" data-i18n="order.cancel_edit"></button>
+				</div>
+			</form>
+		</section>
+		<footer data-i18n="site.footer"></footer>
+	</main>
+	<script src="api-config.js"></script>
+	<script src="client.js"></script>
+	<script src="order.js"></script>
+	<script src="order_detail.js"></script>
+	<script src="app.js"></script>
+</body>
+</html>

@@ -7,6 +7,7 @@ The project is split into a static frontend and a Python JSON API:
 - `image_analysis.py`, `excel_analysis.py`, and `ai_analysis.py` contain format-specific analysis.
 - `outcall_api.py` retrieves and parses public financial market data; source URLs are configurable module constants.
 - `db_manager.py` owns SQLite schema setup and database operations. Uploaded files, accounts, and quotations are stored in the root `uploads.db`.
+- Imported cotton quotations display the file's stored upload date (UTC, `YYYY-MM-DD`) as `quotation_date`. Existing undated rows with a surviving upload are backfilled at startup; template rows and rows whose upload is unavailable remain undated.
 - `frontend/index.html` is the public landing page. Sign in or register to open `frontend/assets.html`, the authenticated upload workspace.
 
 ## Run locally
@@ -36,6 +37,9 @@ All application data endpoints return JSON. Errors use the shape `{"error":{"cod
 - `POST /api/auth` with JSON fields `mode`, `username`, `password`, and (for registration) `confirm_password`
 - `POST /api/logout`
 - `GET /api/uploads`, `POST /api/uploads` with multipart field `file`
+- `GET /api/cotton-quotations`, `PATCH /api/cotton-quotations/{row_number}` to list quotations and update editable fields with string values
+- `GET /api/orders` to list the signed-in user's orders, newest first; `POST /api/orders` to create an order from quotation fields and Sudan cotton pricing inputs
+- `GET`, `PATCH`, `DELETE /api/orders/{id}` to view, edit, or delete an order owned by the signed-in user. `PATCH` requires the complete quotation snapshot, pricing inputs, benchmark source, and delivery date; it recalculates the saved result.
 - `GET /api/uploads/{id}` and `GET /api/uploads/{id}?analyze=1`
 - `POST /api/uploads/{id}/ai-analysis` to analyze an uploaded file with the configured model API
 - `DELETE /api/uploads/{id}`
@@ -43,9 +47,13 @@ All application data endpoints return JSON. Errors use the shape `{"error":{"cod
 
 The content endpoint returns the file bytes rather than JSON so browsers can display or download the original file.
 
+The cotton detail page shows the latest five quotations ordered by quotation date, then insertion order; undated rows appear last. The management page shows all quotations and whether each has been ordered. Every signed-in user can view the shared list, but only the original file uploader or manual quotation creator can edit it; template rows and rows whose uploaded file was deleted are read-only. Source file metadata cannot be edited.
+
+The Sudan cotton model can open `frontend/book_order.html` with its current inputs. Supplier prices are entered in USC/lb and converted to USD/tonne for the API, stored snapshots, and calculations (1 USC/lb = 22.0462 USD/tonne); freight and insurance remain USD/tonne. Quotation date and delivery date (`YYYY-MM-DD`) are required. If a selected quotation has no date, the user supplies a date for the order without changing the source quotation. Existing quotations are otherwise read-only in the order form and cannot be ordered twice. The purchase quantity is fixed to a positive quotation net weight, or otherwise its positive standard weight; if neither is available it can be entered manually. A manually entered quotation is saved on order creation, with net weight set to the purchase quantity, and can be edited by its creator. Order creation and quotation linking are atomic; the server uses the saved quotation rather than client-supplied values. The server validates and recalculates the model and saves its inputs and results alongside the signed-in user and quotation snapshot; creating an order does not submit a trade externally. `frontend/order.html` lists the signed-in user's orders, and `frontend/order_detail.html` displays and edits each order's snapshot without changing the original quotation. Deleting an order keeps the quotation and releases its ordered status. Existing orders without a delivery date retain a blank value until edited.
+
 ## Sudan cotton purchase model
 
-The cotton market board and detail pages show the latest CC Index 3128B, 2227B, and 2129B quotations from the public China Cotton Information Network homepage, including the source quote date. Its historical detail page requires login, so no CC Index history is fabricated or displayed. CC Index and Zhengzhou cotton prices are shown in CNY/tonne.
+The cotton market board and cotton detail pages (ICE, Zhengzhou and CC Index) show the latest CC Index 3128B, 2227B, and 2129B quotations from the public China Cotton Information Network homepage, including the source quote date. Its historical detail page requires login, so no CC Index history is fabricated or displayed. CC Index and Zhengzhou cotton prices are shown in CNY/tonne.
 
 The Zhengzhou cotton detail page includes a parameterized CIF Qingdao model for Sudan cotton. The domestic selling benchmark can use CC Index 3128B, 2227B (the default), 2129B, Zhengzhou cotton futures, or a manually entered price; the user can also enter an actual mill bid and a CIF or FOB supplier offer (with freight, insurance, and other CIF costs for FOB conversion). The model separately reports economic profit, maximum CIF for a target profit, break-even CIF, recoverable import VAT and estimated import-stage cash funding, with domestic-price, FX, quota-cost, and supplier-quote sensitivities. Sudan cotton USD/tonne prices are also converted to US cents per pound (USC/lb).
 
