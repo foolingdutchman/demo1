@@ -50,13 +50,20 @@
 			<p class="status" id="order-status" role="status"></p>
 			<form id="order-form">
 				<h2 data-i18n="order.pricing"></h2>
+				<p class="hint" data-i18n="order.business_fields_note"></p>
 				<label><span data-i18n="order.delivery_date"></span><input id="order-delivery-date" type="date" required></label>
 				<div class="fields" id="order-pricing-fields"></div>
-				<div class="actions"><button type="button" class="secondary" id="order-recalculate" data-i18n="order.recalculate"></button></div>
 				<p class="status" id="order-pricing-result" role="status"></p>
 				<h2 data-i18n="order.quote_details"></h2>
 				<p class="hint" data-i18n="order.source_note"></p>
 				<p class="hint" data-i18n="order.quote_date_note"></p>
+				<label>
+					<span data-i18n="supplier.select"></span>
+					<select id="order-supplier" required>
+						<option value="" disabled data-i18n="supplier.select_placeholder"></option>
+						<option value="__new__" data-i18n="supplier.create_option"></option>
+					</select>
+				</label>
 				<label><span data-i18n="order.select_quote"></span><select id="order-quotation"></select></label>
 				<p class="hint" id="order-quotation-hint"></p>
 				<div class="fields" id="order-quotation-fields"></div>
@@ -67,7 +74,7 @@
 	</main>
 	<script src="api-config.js"></script>
 	<script src="client.js"></script>
-	<script src="order.js"></script>
-	<script src="app.js"></script>
+	<script src="order.js?v=20261124-1938"></script>
+	<script src="app.js?v=20261124-1938"></script>
 </body>
 </html>

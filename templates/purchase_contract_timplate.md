@@ -4,8 +4,10 @@ SALES CONTRACT
 Contract No.: {contract_no}	     Date: {date}
 
 Seller:	{seller}
+Add:	{seller_address}
 
 Buyer:	{buyer}
+Add:	{buyer_address}
 
 The buyer hereby confirmed having bought from the seller the following goods on terms and conditions as specified below:
 

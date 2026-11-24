@@ -22,9 +22,24 @@ def initialize_database():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_salt BLOB NOT NULL,
-                password_hash BLOB NOT NULL
+                password_hash BLOB NOT NULL,
+                company_name TEXT,
+                company_address TEXT,
+                foreign_bank_account TEXT,
+                cny_bank_account TEXT
             )"""
         )
+        user_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(users)")
+        }
+        for column in (
+            "company_name",
+            "company_address",
+            "foreign_bank_account",
+            "cny_bank_account",
+        ):
+            if column not in user_columns:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
         connection.execute(
             """CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY,
@@ -63,6 +78,7 @@ def initialize_database():
         initialize_cotton_quotations(connection)
         initialize_orders(connection)
         initialize_order_documents(connection)
+        initialize_suppliers(connection)
 
 
 def initialize_orders(connection):
@@ -92,6 +108,22 @@ def initialize_orders(connection):
     columns = {row[1] for row in connection.execute("PRAGMA table_info(orders)")}
     if "delivery_date" not in columns:
         connection.execute("ALTER TABLE orders ADD COLUMN delivery_date TEXT")
+    if "supplier_id" not in columns:
+        connection.execute("ALTER TABLE orders ADD COLUMN supplier_id INTEGER")
+
+
+def initialize_suppliers(connection):
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            short_name TEXT NOT NULL,
+            company_name TEXT NOT NULL,
+            company_address TEXT NOT NULL,
+            bank_account TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
 
 
 def initialize_order_documents(connection):
@@ -290,6 +322,137 @@ def create_user(username, salt, password_hash):
         return cursor.lastrowid
 
 
+def get_user_profile(user_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        row = connection.execute(
+            """SELECT username, company_name, company_address,
+                      foreign_bank_account, cny_bank_account
+               FROM users WHERE id = ?""",
+            (user_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return dict(zip(
+        (
+            "username",
+            "company_name",
+            "company_address",
+            "foreign_bank_account",
+            "cny_bank_account",
+        ),
+        row,
+    ))
+
+
+def update_user_profile(user_id, fields):
+    columns = (
+        "company_name",
+        "company_address",
+        "foreign_bank_account",
+        "cny_bank_account",
+    )
+    if fields.keys() != set(columns):
+        raise ValueError("Invalid profile fields")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            f"UPDATE users SET {', '.join(f'{column} = ?' for column in columns)} "
+            "WHERE id = ?",
+            (*(fields[column] for column in columns), user_id),
+        )
+        return cursor.rowcount
+
+
+def update_user_password(user_id, salt, password_hash):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            "UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?",
+            (sqlite3.Binary(salt), sqlite3.Binary(password_hash), user_id),
+        )
+        return cursor.rowcount
+
+
+def list_suppliers(user_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        rows = connection.execute(
+            """SELECT id, short_name, company_name, company_address,
+                      bank_account, created_at
+               FROM suppliers
+               WHERE user_id = ?
+               ORDER BY short_name COLLATE NOCASE, id""",
+            (user_id,),
+        ).fetchall()
+    return [
+        dict(zip(
+            (
+                "id",
+                "short_name",
+                "company_name",
+                "company_address",
+                "bank_account",
+                "created_at",
+            ),
+            row,
+        ))
+        for row in rows
+    ]
+
+
+def create_supplier(user_id, fields):
+    expected = {
+        "short_name",
+        "company_name",
+        "company_address",
+        "bank_account",
+    }
+    if fields.keys() != expected:
+        raise ValueError("Invalid supplier fields")
+    if not all(fields[key].strip() for key in (
+        "short_name", "company_name", "company_address"
+    )):
+        raise ValueError("Required supplier fields are missing")
+    if any(len(value) > 2000 for value in fields.values()):
+        raise ValueError("Supplier fields are too long")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            """INSERT INTO suppliers
+               (user_id, short_name, company_name, company_address, bank_account)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                fields["short_name"].strip(),
+                fields["company_name"].strip(),
+                fields["company_address"].strip(),
+                fields["bank_account"].strip() or None,
+            ),
+        )
+        supplier_id = cursor.lastrowid
+        row = connection.execute(
+            """SELECT id, short_name, company_name, company_address,
+                      bank_account, created_at
+               FROM suppliers WHERE id = ? AND user_id = ?""",
+            (supplier_id, user_id),
+        ).fetchone()
+    return dict(zip(
+        (
+            "id",
+            "short_name",
+            "company_name",
+            "company_address",
+            "bank_account",
+            "created_at",
+        ),
+        row,
+    ))
+
+
+def supplier_belongs_to_user(user_id, supplier_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        return connection.execute(
+            "SELECT 1 FROM suppliers WHERE id = ? AND user_id = ?",
+            (supplier_id, user_id),
+        ).fetchone() is not None
+
+
 def delete_session(token_hash):
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         connection.execute(
@@ -356,17 +519,32 @@ def list_orders(user_id, order_id=None):
         *(column for column, _header, _kind in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]),
         "quotation_date", "delivery_date", "source_filename", "source_sheet_name", "benchmark_source",
         "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
-        "pricing_inputs", "pricing_result",
+        "supplier_id", "pricing_inputs", "pricing_result",
     )
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         where = "user_id = ?" if order_id is None else "user_id = ? AND id = ?"
         params = (user_id,) if order_id is None else (user_id, order_id)
         rows = connection.execute(
-            f"SELECT {', '.join(columns)} FROM orders WHERE {where} ORDER BY id DESC", params,
+            f"""SELECT {', '.join(f'o.{column}' for column in columns)},
+                       s.short_name, s.company_name, s.company_address, s.bank_account
+                FROM orders AS o
+                LEFT JOIN suppliers AS s ON s.id = o.supplier_id
+                WHERE {'o.user_id = ?' if order_id is None else 'o.user_id = ? AND o.id = ?'}
+                ORDER BY o.id DESC""",
+            params,
         ).fetchall()
     orders = []
     for row in rows:
-        order = dict(zip(columns, row))
+        order = dict(zip(
+            (
+                *columns,
+                "supplier_short_name",
+                "supplier_company_name",
+                "supplier_address",
+                "supplier_bank_account",
+            ),
+            row,
+        ))
         order["pricing_inputs"] = json.loads(order["pricing_inputs"])
         order["pricing_result"] = json.loads(order["pricing_result"])
         orders.append(order)
@@ -432,8 +610,8 @@ def create_order_document(
     ))
 
 
-def create_order(user_id, quotation_id, quotation, benchmark_source, delivery_date, pricing_inputs,
-                 pricing_result, quantity_tons, supplier_price, quote_basis):
+def create_order(user_id, supplier_id, quotation_id, quotation, benchmark_source, delivery_date,
+                 pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis):
     allowed = {
         column for column, _header, _kind
         in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
@@ -442,6 +620,11 @@ def create_order(user_id, quotation_id, quotation, benchmark_source, delivery_da
         raise ValueError("Invalid order quotation fields")
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
+        if supplier_id is not None and not connection.execute(
+            "SELECT 1 FROM suppliers WHERE id = ? AND user_id = ?",
+            (supplier_id, user_id),
+        ).fetchone():
+            raise ValueError("Supplier not found")
         if quotation_id is not None:
             quote_columns = tuple(quotation)
             row = connection.execute(
@@ -476,7 +659,7 @@ def create_order(user_id, quotation_id, quotation, benchmark_source, delivery_da
             quotation_id = cursor.lastrowid
         columns = (
             "user_id", "source_quotation_id", *quotation.keys(), "benchmark_source", "delivery_date",
-            "pricing_inputs", "pricing_result", "quantity_tons",
+            "supplier_id", "pricing_inputs", "pricing_result", "quantity_tons",
             "supplier_price_usd_per_ton", "supplier_quote_basis",
         )
         cursor = connection.execute(
@@ -484,26 +667,39 @@ def create_order(user_id, quotation_id, quotation, benchmark_source, delivery_da
             f"VALUES ({', '.join('?' for _ in columns)})",
             (
                 user_id, quotation_id, *quotation.values(), benchmark_source, delivery_date,
-                pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis,
+                supplier_id, pricing_inputs, pricing_result, quantity_tons, supplier_price,
+                quote_basis,
             ),
         )
         return cursor.lastrowid
 
 
-def update_order(user_id, order_id, quotation, benchmark_source, delivery_date,
+def update_order(user_id, order_id, supplier_id, quotation, benchmark_source, delivery_date,
                  pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis):
     columns = (
-        *quotation.keys(), "benchmark_source", "delivery_date", "pricing_inputs",
+        *quotation.keys(), "benchmark_source", "delivery_date", "supplier_id", "pricing_inputs",
         "pricing_result", "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
     )
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         cursor = connection.execute(
             f"UPDATE orders SET {', '.join(f'{column} = ?' for column in columns)} "
             "WHERE id = ? AND user_id = ?",
-            (*quotation.values(), benchmark_source, delivery_date, pricing_inputs,
+            (*quotation.values(), benchmark_source, delivery_date, supplier_id, pricing_inputs,
              pricing_result, quantity_tons, supplier_price, quote_basis, order_id, user_id),
         )
-        return cursor.rowcount
+        purchase_contract_deleted = 0
+        if cursor.rowcount:
+            deletion = connection.execute(
+                """DELETE FROM order_documents
+                   WHERE order_id = ? AND user_id = ?
+                     AND document_type = 'purchase_contract'""",
+                (order_id, user_id),
+            )
+            purchase_contract_deleted = deletion.rowcount
+        return {
+            "updated": cursor.rowcount,
+            "purchase_contract_deleted": purchase_contract_deleted,
+        }
 
 
 def delete_order(user_id, order_id):

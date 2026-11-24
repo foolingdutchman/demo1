@@ -65,17 +65,24 @@ def _number(value, places=2, default="—"):
     return rendered or "0"
 
 
-def build_contract_context(order, username):
+def build_contract_context(order, username, profile=None):
+    profile = profile or {}
     quantity = _decimal(order.get("quantity_tons"))
     price_usd_per_ton = _decimal(order.get("supplier_price_usd_per_ton"))
     quotation_date = _text(order.get("quotation_date"), default="")
     created_at = _text(order.get("created_at"), default="")
-    seller = order.get("processor") or order.get("origin")
+    seller = (
+        order.get("supplier_company_name")
+        or order.get("processor")
+        or order.get("origin")
+    )
     return {
         "contract_no": f"PC-{int(order['id']):06d}",
         "date": created_at[:10] or quotation_date,
         "seller": _text(seller),
-        "buyer": _text(username),
+        "seller_address": _text(order.get("supplier_address")),
+        "buyer": _text(profile.get("company_name") or username),
+        "buyer_address": _text(profile.get("company_address")),
         "crop_year": quotation_date[:4] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", quotation_date) else "—",
         "staple_length": _number(order.get("length_mm")),
         "mic": _number(order.get("micronaire")),
@@ -88,12 +95,12 @@ def build_contract_context(order, username):
     }
 
 
-def render_contract_text(order, username, template_text=None):
+def render_contract_text(order, username, template_text=None, profile=None):
     try:
         template = template_text if template_text is not None else TEMPLATE_PATH.read_text(encoding="utf-8")
     except OSError as error:
         raise ContractGenerationError("Purchase contract template is unavailable") from error
-    values = build_contract_context(order, username)
+    values = build_contract_context(order, username, profile)
     try:
         rendered = template.format(**values).strip()
     except (KeyError, ValueError) as error:
@@ -237,8 +244,12 @@ def _contract_flowables(text, styles, context):
     parties = Table([
         [_paragraph("SELLER", styles["party_label"]),
          _paragraph(context["seller"], styles["party_value"])],
+        [_paragraph("ADD.", styles["party_label"]),
+         _paragraph(context["seller_address"], styles["party_value"])],
         [_paragraph("BUYER", styles["party_label"]),
          _paragraph(context["buyer"], styles["party_value"])],
+        [_paragraph("ADD.", styles["party_label"]),
+         _paragraph(context["buyer_address"], styles["party_value"])],
     ], colWidths=[62, 318])
     parties.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
@@ -253,6 +264,7 @@ def _contract_flowables(text, styles, context):
     flowables.extend([parties, Spacer(1, 12)])
 
     index = 1
+    in_body = False
     while index < len(lines):
         raw = lines[index]
         stripped = raw.strip()
@@ -260,12 +272,19 @@ def _contract_flowables(text, styles, context):
         if not stripped:
             flowables.append(Spacer(1, 3))
             continue
-        if stripped.startswith(("Contract No.:", "Seller:", "Buyer:")):
+        if stripped.startswith(("Contract No.:", "Seller:", "Add:", "Buyer:")):
             continue
         if stripped.startswith("The Seller "):
+            seller_label = Paragraph(
+                f"Seller:<br/>{escape(context['seller'])}",
+                styles["signature_label"],
+            )
+            buyer_label = Paragraph(
+                f"Buyer:<br/>{escape(context['buyer'])}",
+                styles["signature_label"],
+            )
             signature = Table([
-                [_paragraph(stripped.split("The buyer", 1)[0].rstrip(), styles["signature_label"]),
-                 _paragraph(f"The buyer {context['buyer']}", styles["signature_label"])],
+                [seller_label, buyer_label],
                 [Spacer(1, 34), Spacer(1, 34)],
                 [_paragraph("Signature / Company Stamp", styles["meta"]),
                  _paragraph("Signature / Company Stamp", styles["meta"])],
@@ -282,24 +301,28 @@ def _contract_flowables(text, styles, context):
             ]))
             flowables.extend([Spacer(1, 14), KeepTogether([signature])])
             continue
+        if stripped.startswith("The buyer hereby confirmed"):
+            in_body = True
+            flowables.append(_paragraph(stripped, styles["intro"]))
+            continue
+        if not in_body:
+            continue
         if re.match(r"^\d+\)", stripped):
             flowables.append(_paragraph(stripped, styles["clause"]))
         elif re.match(r"^\d+\.", stripped):
             flowables.append(_paragraph(stripped, styles["subclause"]))
-        elif index <= 6:
-            flowables.append(_paragraph(stripped, styles["intro"]))
         else:
             style = styles["subclause"] if raw[:1].isspace() else styles["body"]
             flowables.append(_paragraph(stripped, style))
     return flowables
 
 
-def build_contract_pdf(order, username):
-    text = render_contract_text(order, username)
+def build_contract_pdf(order, username, profile=None):
+    text = render_contract_text(order, username, profile=profile)
     pdf = BytesIO()
     font_name = "STSong-Light"
     pdfmetrics.registerFont(UnicodeCIDFont(font_name))
-    context = build_contract_context(order, username)
+    context = build_contract_context(order, username, profile)
     document = SimpleDocTemplate(
         pdf,
         pagesize=(PAGE_WIDTH, PAGE_HEIGHT),

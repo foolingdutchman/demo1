@@ -336,6 +336,36 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"order": {"id": order_id}}, 201)
 
+    def _handle_list_suppliers(self, user_id):
+        try:
+            suppliers = db_manager.list_suppliers(user_id)
+        except db_manager.DatabaseError:
+            logging.exception("Could not list suppliers")
+            self._send_error_json(
+                500, "database_error", self._t("request.database_read_error")
+            )
+            return
+        self._send_json({"suppliers": suppliers})
+
+    def _handle_create_supplier(self, user_id):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            supplier = db_manager.create_supplier(user_id, fields)
+        except ValueError:
+            self._send_error_json(
+                400, "invalid_supplier", self._t("supplier.invalid")
+            )
+            return
+        except db_manager.DatabaseError:
+            logging.exception("Could not create supplier")
+            self._send_error_json(
+                500, "database_error", self._t("supplier.save_failed")
+            )
+            return
+        self._send_json({"supplier": supplier}, 201)
+
     def _handle_list_orders(self, user_id, order_id=None):
         try:
             orders = db_manager.list_orders(user_id, order_id)
@@ -364,10 +394,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             logging.exception("Could not update order")
             self._send_error_json(500, "database_error", self._t("order.save_failed"))
             return
-        if not updated:
+        if not updated["updated"]:
             self._send_error_json(404, "order_not_found", self._t("order.not_found"))
             return
-        self._send_json({"ok": True})
+        self._send_json({
+            "ok": True,
+            "purchase_contract_deleted": bool(
+                updated["purchase_contract_deleted"]
+            ),
+        })
 
     def _handle_delete_order(self, user_id, order_id):
         try:
@@ -378,6 +413,68 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if not deleted:
             self._send_error_json(404, "order_not_found", self._t("order.not_found"))
+            return
+        self._send_json({"ok": True})
+
+    def _handle_user_profile(self, user_id):
+        try:
+            profile = db_manager.get_user_profile(user_id)
+        except db_manager.DatabaseError:
+            logging.exception("Could not read user profile %s", user_id)
+            self._send_error_json(
+                500, "database_error", self._t("request.database_read_error")
+            )
+            return
+        if profile is None:
+            self._send_error_json(404, "user_not_found", self._t("profile.not_found"))
+            return
+        self._send_json({"profile": profile})
+
+    def _handle_update_user_profile(self, user_id):
+        fields = self._read_json()
+        if fields is None:
+            return
+        expected = {
+            "company_name",
+            "company_address",
+            "foreign_bank_account",
+            "cny_bank_account",
+        }
+        if fields.keys() != expected or any(len(value) > 2000 for value in fields.values()):
+            self._send_error_json(
+                400, "invalid_profile", self._t("profile.invalid")
+            )
+            return
+        values = {key: value.strip() or None for key, value in fields.items()}
+        try:
+            updated = db_manager.update_user_profile(user_id, values)
+        except (ValueError, db_manager.DatabaseError):
+            logging.exception("Could not update user profile %s", user_id)
+            self._send_error_json(
+                500, "database_error", self._t("profile.save_failed")
+            )
+            return
+        if not updated:
+            self._send_error_json(404, "user_not_found", self._t("profile.not_found"))
+            return
+        self._send_json({"ok": True})
+
+    def _handle_change_password(self, user_id, username):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            auth_manager.change_password(user_id, username, fields)
+        except auth_manager.AuthError as error:
+            self._send_error_json(
+                error.status, error.code, self._t(error.message_key)
+            )
+            return
+        except db_manager.DatabaseError:
+            logging.exception("Could not change password for user %s", user_id)
+            self._send_error_json(
+                500, "database_error", self._t("profile.password_save_failed")
+            )
             return
         self._send_json({"ok": True})
 
@@ -403,8 +500,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 user_id, order_id, "purchase_contract"
             )
             if existing is None:
+                profile = db_manager.get_user_profile(user_id)
+                if profile is None:
+                    self._send_error_json(
+                        404, "user_not_found", self._t("profile.not_found")
+                    )
+                    return
                 filename = f"purchase-contract-{order_id}.pdf"
-                pdf = purchase_contract.build_contract_pdf(orders[0], username)
+                pdf = purchase_contract.build_contract_pdf(
+                    orders[0], username, profile
+                )
                 document = db_manager.create_order_document(
                     user_id,
                     order_id,
@@ -745,6 +850,16 @@ class ApiHandler(BaseHTTPRequestHandler):
             if user is not None:
                 self._handle_list_orders(user[0])
             return
+        if parsed.path == "/api/suppliers":
+            user = self._require_user()
+            if user is not None:
+                self._handle_list_suppliers(user[0])
+            return
+        if parsed.path == "/api/user-profile":
+            user = self._require_user()
+            if user is not None:
+                self._handle_user_profile(user[0])
+            return
         documents_match = self._order_documents_match(parsed.path)
         if documents_match is not None:
             user = self._require_user()
@@ -892,6 +1007,11 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlsplit(self.path)
+        if parsed.path == "/api/suppliers":
+            user = self._require_user()
+            if user is not None:
+                self._handle_create_supplier(user[0])
+            return
         documents_match = self._order_documents_match(parsed.path)
         if documents_match is not None:
             order_id, document_type, download = documents_match
@@ -937,6 +1057,16 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         parsed = urlsplit(self.path)
+        if parsed.path == "/api/user-profile":
+            user = self._require_user()
+            if user is not None:
+                self._handle_update_user_profile(user[0])
+            return
+        if parsed.path == "/api/user-password":
+            user = self._require_user()
+            if user is not None:
+                self._handle_change_password(user[0], user[1])
+            return
         order_id = self._order_id(parsed.path)
         if order_id is not None:
             user = self._require_user()

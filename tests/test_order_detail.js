@@ -29,10 +29,11 @@ test("order detail renders snapshots, edits fields and confirms deletion", async
 		},
 	};
 	let confirmed = false;
-	const window = { location: { href: "" }, confirm() { return confirmed; } };
+	const window = { location: { href: "" } };
 	const saved = {
 		id: 5, created_at: "2026-11-23 01:02:03", delivery_date: null,
 		quotation_date: "2026-11-23", source_quotation_id: 4, batch_number: "<script>",
+		supplier_short_name: "SUD",
 		benchmark_source: "manual", pricing_inputs: {
 			quantity_tons: "100", supplier_quote_usd_per_ton: "1102.31",
 			buyer_bid_vat_inclusive: "false",
@@ -48,6 +49,7 @@ test("order detail renders snapshots, edits fields and confirms deletion", async
 	const context = vm.createContext({
 		document, window, location: { search: "?id=5" }, URLSearchParams, Intl,
 		App: {
+			async confirm() { return confirmed; },
 			t(key, values = {}) { return key + (values.id || ""); },
 			setNotice(message) { notice = message; },
 			async api(url, options = {}) {
@@ -74,6 +76,7 @@ test("order detail renders snapshots, edits fields and confirms deletion", async
 	const find = (fields, name) =>
 		fields.find((field) => field.children[0].textContent === name).children[1];
 	assert.equal(find(quoteFields, "market.cotton_column.batch_number").textContent, "<script>");
+	assert.equal(find(quoteFields, "supplier.select").textContent, "SUD");
 	assert.equal(find(quoteFields, "order.delivery_date").textContent, "—");
 	assert.match(content.children[7].children[1].textContent, /"fx_cny_per_usd": 6.7/);
 	elements.get("order-documents").events.click();
@@ -82,6 +85,7 @@ test("order detail renders snapshots, edits fields and confirms deletion", async
 	const groups = elements.get("order-edit-fields").children;
 	const quoteInputs = groups[1].children;
 	const pricingInputs = groups[3].children;
+	assert.equal(pricingInputs.length, 3);
 	assert.equal(find(quoteInputs, "order.delivery_date").required, true);
 	assert.equal(find(quoteInputs, "market.cotton_column.quotation_date").required, true);
 	find(quoteInputs, "order.delivery_date").value = "2026-12-10";

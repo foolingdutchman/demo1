@@ -440,6 +440,35 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(self.request("/api/orders/1", "PATCH", body({}), headers).code, 401)
         self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 401)
         self.assertEqual(self.register().code, 201)
+        supplier = self.request(
+            "/api/suppliers",
+            "POST",
+            body({
+                "short_name": "Test Supplier",
+                "company_name": "Test Cotton Export Company",
+                "company_address": "Khartoum, Sudan",
+                "bank_account": "IBAN TEST-123",
+            }),
+            headers,
+        )
+        self.assertEqual(supplier.code, 201)
+        supplier_id = json.loads(supplier.read())["supplier"]["id"]
+        fields["supplier_id"] = str(supplier_id)
+        profile_values = {
+            "company_name": "Buyer Company Ltd.",
+            "company_address": "Shanghai, China",
+            "foreign_bank_account": "",
+            "cny_bank_account": "",
+        }
+        self.assertEqual(
+            self.request(
+                "/api/user-profile",
+                "PATCH",
+                body(profile_values),
+                headers,
+            ).code,
+            200,
+        )
         self.assertEqual(json.loads(self.request("/api/orders").read()), {"orders": []})
         quotations = json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"]
         fields["quotation_id"] = str(quotations[0]["row_number"])
@@ -507,6 +536,10 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual([order["id"] for order in orders], [manual_id, order_id])
         self.assertEqual(orders[1]["batch_number"], "original")
         self.assertEqual(orders[1]["source_filename"], "quote.xlsx")
+        self.assertEqual(orders[1]["supplier_id"], supplier_id)
+        self.assertEqual(
+            orders[1]["supplier_company_name"], "Test Cotton Export Company"
+        )
         self.assertEqual(orders[1]["pricing_inputs"], pricing)
         self.assertEqual(orders[1]["delivery_date"], "2026-12-10")
         self.assertEqual(orders[1]["pricing_result"]["supplier_evaluation"]["cif_usd_per_ton"], 1200)
@@ -580,7 +613,14 @@ class ApiIntegrationTests(unittest.TestCase):
         )
         self.assertIn("SALES CONTRACT", contract_text)
         self.assertIn(f"PC-{order_id:06d}", contract_text)
-        self.assertIn("api_test_user", contract_text)
+        self.assertIn("Test Cotton Export Company", contract_text)
+        self.assertIn("Khartoum, Sudan", contract_text)
+        self.assertIn("Buyer Company Ltd.", contract_text)
+        self.assertIn("Shanghai, China", contract_text)
+        self.assertLess(
+            contract_text.count("The buyer hereby confirmed"),
+            2,
+        )
         self.assertIn("115,000.00", contract_text)
         self.assertNotIn("{quantity}", contract_text)
         self.assertEqual(self.request("/api/logout", "POST").code, 200)
@@ -589,6 +629,20 @@ class ApiIntegrationTests(unittest.TestCase):
             "password": "SecretPass123", "confirm_password": "SecretPass123",
         }
         self.assertEqual(self.request("/api/auth", "POST", body(other_user), headers).code, 201)
+        other_supplier = self.request(
+            "/api/suppliers",
+            "POST",
+            body({
+                "short_name": "Other",
+                "company_name": "Other Supplier Co.",
+                "company_address": "Other address",
+                "bank_account": "",
+            }),
+            headers,
+        )
+        other_supplier_id = str(json.loads(other_supplier.read())["supplier"]["id"])
+        other_fields = {**fields, "supplier_id": other_supplier_id}
+        other_manual = {**manual, "supplier_id": other_supplier_id}
         self.assertEqual(json.loads(self.request("/api/orders").read()), {"orders": []})
         self.assertEqual(self.request(documents_path).code, 404)
         self.assertEqual(
@@ -608,8 +662,14 @@ class ApiIntegrationTests(unittest.TestCase):
         other_manual_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == manual_row[0])
         self.assertFalse(other_manual_quote["editable"])
         self.assertEqual(self.request(f"/api/cotton-quotations/{manual_row[0]}", "PATCH", body({"batch_number": "other"}), headers).code, 404)
-        self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 409)
-        self.assertEqual(self.request("/api/orders", "POST", body(manual), headers).code, 201)
+        self.assertEqual(
+            self.request("/api/orders", "POST", body(other_fields), headers).code,
+            409,
+        )
+        self.assertEqual(
+            self.request("/api/orders", "POST", body(other_manual), headers).code,
+            201,
+        )
         self.assertEqual(len(json.loads(self.request("/api/orders").read())["orders"]), 1)
         self.assertEqual(self.request("/api/logout", "POST").code, 200)
         self.assertEqual(self.request("/api/auth", "POST", body({
@@ -631,6 +691,13 @@ class ApiIntegrationTests(unittest.TestCase):
         edited_order = json.loads(self.request(f"/api/orders/{order_id}").read())["order"]
         self.assertEqual((edited_order["batch_number"], edited_order["delivery_date"], edited_order["quantity_tons"]), ("snapshot-edited", "2026-12-20", 125))
         self.assertEqual(edited_order["pricing_result"]["supplier_evaluation"]["cif_usd_per_ton"], 1250)
+        remaining_documents = json.loads(
+            self.request(f"/api/orders/{order_id}/documents").read()
+        )["documents"]
+        self.assertEqual(
+            [item["document_type"] for item in remaining_documents],
+            ["related_documents"],
+        )
         original_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == int(fields["quotation_id"]))
         self.assertEqual(original_quote["batch_number"], "original")
         self.assertEqual(original_quote["quotation_date"], "2026-11-23")
@@ -693,6 +760,14 @@ class ApiIntegrationTests(unittest.TestCase):
             ).fetchone()[0], 1)
         self.assertEqual(self.request(f"/api/orders/{order_id}", "DELETE").code, 200)
         self.assertEqual(self.request(f"/api/orders/{order_id}").code, 404)
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM order_documents WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()[0],
+                0,
+            )
         released = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == int(fields["quotation_id"]))
         self.assertFalse(released["ordered"])
         self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 201)
@@ -810,6 +885,90 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(login.code, 200)
         self.assertEqual(json.loads(login.read())["user"]["username"], "api_test_user")
         self.assertTrue(json.loads(self.request("/api/session").read())["authenticated"])
+
+    def test_user_profile_and_password_can_be_updated(self):
+        headers = {"Content-Type": "application/json"}
+        self.assertEqual(self.request("/api/user-profile").code, 401)
+        self.assertEqual(self.register().code, 201)
+        profile = json.loads(self.request("/api/user-profile").read())["profile"]
+        self.assertEqual(profile["username"], "api_test_user")
+        self.assertIsNone(profile["company_name"])
+        values = {
+            "company_name": "Sudan Cotton Trading Ltd.",
+            "company_address": "Shanghai, China",
+            "foreign_bank_account": "Bank / SWIFT / USD 123456",
+            "cny_bank_account": "Bank / CNY 654321",
+        }
+        response = self.request(
+            "/api/user-profile",
+            "PATCH",
+            json.dumps(values).encode(),
+            headers,
+        )
+        self.assertEqual(response.code, 200)
+        self.assertEqual(
+            {
+                key: value
+                for key, value in json.loads(
+                    self.request("/api/user-profile").read()
+                )["profile"].items()
+                if key in values
+            },
+            values,
+        )
+        invalid_password = {
+            "current_password": "WrongPass123",
+            "new_password": "NewSecretPass456",
+            "confirm_password": "NewSecretPass456",
+        }
+        self.assertEqual(
+            self.request(
+                "/api/user-password",
+                "PATCH",
+                json.dumps(invalid_password).encode(),
+                headers,
+            ).code,
+            401,
+        )
+        password = {
+            **invalid_password,
+            "current_password": "SecretPass123",
+        }
+        self.assertEqual(
+            self.request(
+                "/api/user-password",
+                "PATCH",
+                json.dumps(password).encode(),
+                headers,
+            ).code,
+            200,
+        )
+        self.assertEqual(self.request("/api/logout", "POST").code, 200)
+        old_login = {
+            "mode": "login",
+            "username": "api_test_user",
+            "password": "SecretPass123",
+        }
+        self.assertEqual(
+            self.request(
+                "/api/auth",
+                "POST",
+                json.dumps(old_login).encode(),
+                headers,
+            ).code,
+            401,
+        )
+        self.assertEqual(
+            self.request(
+                "/api/auth",
+                "POST",
+                json.dumps(
+                    {**old_login, "password": "NewSecretPass456"}
+                ).encode(),
+                headers,
+            ).code,
+            200,
+        )
 
     def upload(self, filename, content, content_type):
         boundary = "----test-boundary"

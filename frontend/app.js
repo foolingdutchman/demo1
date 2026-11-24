@@ -22,6 +22,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 			await initOrderDetailPage();
 		} else if (page === "order-docs") {
 			await initOrderDocumentsPage();
+		} else if (page === "user-info") {
+			await initUserInfoPage();
+		} else if (page === "supplier") {
+			await initSupplierPage();
 		} else if (page === "detail") {
 			await initDetailPage();
 		}
@@ -1112,9 +1116,13 @@ async function initAuthenticatedPage(nextPage) {
 		goToLogin(nextPage);
 		return false;
 	}
-	document.getElementById("username").textContent = App.t("site.logged_in", {
+	const username = document.getElementById("username");
+	const profileLink = document.createElement("a");
+	profileLink.href = "user_info.html";
+	profileLink.textContent = App.t("site.logged_in", {
 		username: session.user.username,
 	});
+	username.replaceChildren(profileLink);
 	document.getElementById("logout-button").addEventListener("click", async () => {
 		try {
 			await App.api("/api/logout", { method: "POST" });
@@ -1179,7 +1187,7 @@ async function loadUploadList(limit = null, nextPage = "assets.html") {
 			deleteButton.className = "delete-button";
 			deleteButton.textContent = App.t("site.delete");
 			deleteButton.addEventListener("click", async () => {
-				if (!window.confirm(App.t("site.confirm_delete"))) return;
+				if (!await App.confirm(App.t("site.confirm_delete"))) return;
 				try {
 					await App.api(`/api/uploads/${upload.id}`, { method: "DELETE" });
 					await loadUploadList(limit, nextPage);
@@ -1267,7 +1275,7 @@ async function initDetailPage() {
 		}
 	});
 	document.getElementById("delete-button").addEventListener("click", async () => {
-		if (!window.confirm(App.t("site.confirm_delete"))) return;
+		if (!await App.confirm(App.t("site.confirm_delete"))) return;
 		try {
 			await App.api(`/api/uploads/${id}`, { method: "DELETE" });
 			window.location.href = "assets.html";

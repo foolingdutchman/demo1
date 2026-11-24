@@ -70,6 +70,7 @@ async function initOrderDetailPage() {
 		addFields(content, "order.quote_details", [
 			["order.created_at", order.created_at], ["order.delivery_date", order.delivery_date],
 			["order.source_quotation", order.source_quotation_id],
+			["supplier.select", order.supplier_short_name],
 			...COTTON_QUOTATION_TABLES[0].columns.map((name) =>
 				[`market.cotton_column.${name}`, order[name]]),
 		]);
@@ -147,12 +148,19 @@ async function initOrderDetailPage() {
 		const pricingFields = document.createElement("div");
 		pricingFields.className = "fields";
 		fields.append(pricingHeading, pricingFields);
-		benchmark = addInput(pricingFields, "market.sudan_benchmark_source_label", order.benchmark_source, null, ORDER_BENCHMARK_SOURCES);
+		benchmark = { value: order.benchmark_source, disabled: false };
+		const visiblePricingFields = new Set([
+			"supplier_quote_usd_per_ton",
+			"supplier_quote_basis",
+			"quantity_tons",
+		]);
 		for (const [name, label, type] of ORDER_PRICING_FIELDS) {
 			const stored = order.pricing_inputs[name];
 			const value = name === "supplier_quote_usd_per_ton" ? usdPerTonToUsc(stored) : stored;
-			const input = addInput(pricingFields, label, value, type ? null : "number", type ? ORDER_SELECT_OPTIONS[type] : null);
-			input.required = name !== "direct_buyer_bid_cny_per_ton";
+			const input = visiblePricingFields.has(name)
+				? addInput(pricingFields, label, value, type ? null : "number", type ? ORDER_SELECT_OPTIONS[type] : null)
+				: { value: value ?? "", disabled: false, required: false };
+			input.required = visiblePricingFields.has(name);
 			pricingInputs.set(name, input);
 		}
 		App.setNotice("");
@@ -172,7 +180,7 @@ async function initOrderDetailPage() {
 		App.setNotice("");
 	});
 	remove.addEventListener("click", async () => {
-		if (!window.confirm(App.t("order.confirm_delete", { id }))) return;
+		if (!await App.confirm(App.t("order.confirm_delete", { id }))) return;
 		remove.disabled = true;
 		try {
 			await App.api(`/api/orders/${id}`, { method: "DELETE" });
@@ -194,13 +202,15 @@ async function initOrderDetailPage() {
 		cancel.disabled = true;
 		for (const input of [...quotationInputs.values(), ...pricingInputs.values(), benchmark, delivery]) input.disabled = true;
 		try {
-			await App.api(`/api/orders/${id}`, {
+			const response = await App.api(`/api/orders/${id}`, {
 				method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
 			});
 			await load();
 			form.hidden = true;
 			content.hidden = false;
-			status.textContent = App.t("order.updated");
+			status.textContent = response.purchase_contract_deleted
+				? App.t("order.updated_contract_deleted")
+				: App.t("order.updated");
 		} catch (error) {
 			handleUnauthorized(error, next);
 		} finally {

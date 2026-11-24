@@ -12,6 +12,7 @@ test("order page locks an existing quote and converts the supplier price", async
 		return {
 			children: [], events: {}, textContent: "", value: "", hidden: false,
 			append(...items) { this.children.push(...items); },
+			insertBefore(item) { this.children.unshift(item); },
 			addEventListener(name, callback) { this.events[name] = callback; },
 		};
 	}
@@ -50,6 +51,13 @@ test("order page locks an existing quote and converts the supplier price", async
 						{ row_number: 6, batch_number: "missing", net_weight_tons: 0, standard_weight_tons: null },
 						{ row_number: 7, batch_number: "ordered", ordered: true },
 					] },
+				};
+				if (url === "/api/suppliers") return {
+					suppliers: [{
+						id: 3,
+						short_name: "SUD",
+						company_name: "Sudan Cotton Co.",
+					}],
 				};
 				if (url === "/api/sudan-cotton-pricing") return {
 					max_target_cif_usd_per_ton: 1200, break_even_cif_usd_per_ton: 1300,
@@ -93,8 +101,9 @@ test("order page locks an existing quote and converts the supplier price", async
 		const requests = [];
 		const context = vm.createContext({
 			document, Intl,
-			window: { confirm() { return confirmed; } },
+			window: {},
 			App: {
+				async confirm() { return confirmed; },
 				t(key, values = {}) { return key + (values.id || ""); },
 				setNotice() {},
 				async api(url, options) {
@@ -130,6 +139,7 @@ test("order page locks an existing quote and converts the supplier price", async
 	const find = (fields, name) =>
 		fields.find((field) => field.children[0].textContent === name).children[1];
 	const pricing = elements.get("order-pricing-fields").children;
+	assert.equal(pricing.length, 3);
 	const quantity = find(pricing, "order.quantity_required");
 	const netWeight = find(quoteFields, "market.cotton_column.net_weight_tons");
 	quantity.value = "33";
@@ -159,14 +169,10 @@ test("order page locks an existing quote and converts the supplier price", async
 	assert.equal(quoteDate.readOnly, false);
 	quoteDate.value = "2026-11-23";
 	elements.get("order-delivery-date").value = "2026-12-10";
-	assert.equal(find(pricing, "market.sudan_benchmark_label").value, "15360");
 	find(pricing, "order.price_required").value = "50";
 	assert.equal(find(pricing, "order.quantity_required").value, "100");
 	assert.equal(find(pricing, "order.quantity_required").readOnly, true);
-	await elements.get("order-recalculate").events.click();
-	assert.match(elements.get("order-pricing-result").textContent, /order\.quote_calculated/);
-	const recalculation = calls.find((call) => call.url === "/api/sudan-cotton-pricing");
-	assert.ok(Math.abs(Number(JSON.parse(recalculation.options.body).supplier_quote_usd_per_ton) - 1102.31) < 1e-8);
+	elements.get("order-supplier").value = "3";
 	await elements.get("order-form").events.submit({ preventDefault() {} });
 	const payload = JSON.parse(calls.find((call) => call.url === "/api/orders").options.body);
 	assert.equal(payload.quotation_id, "4");
@@ -174,6 +180,7 @@ test("order page locks an existing quote and converts the supplier price", async
 	assert.equal(payload.quotation_origin, "Sudan");
 	assert.equal(payload.quotation_quotation_date, "2026-11-23");
 	assert.equal(payload.delivery_date, "2026-12-10");
+	assert.equal(payload.supplier_id, "3");
 	assert.equal(payload.pricing_domestic_benchmark_cny_per_ton, "15360");
 	assert.equal(payload.pricing_quantity_tons, "100");
 	assert.ok(Math.abs(Number(payload.pricing_supplier_quote_usd_per_ton) - 1102.31) < 1e-8);
@@ -240,7 +247,16 @@ test("order list redirects to login and returns after authentication", async () 
 			App: {
 				t(key) { return key; },
 				setNotice(message) { if (message) throw new Error(message); },
-				async api() { return { sheets: { quotation_summary: [{ row_number: 5, quotation_date: null }] } }; },
+				async api(url) {
+					if (url === "/api/suppliers") {
+						return { suppliers: [] };
+					}
+					return {
+						sheets: {
+							quotation_summary: [{ row_number: 5, quotation_date: null }],
+						},
+					};
+				},
 			},
 		});
 		vm.runInContext(app, context);

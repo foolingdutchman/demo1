@@ -54,6 +54,26 @@ def _create_session(user_id):
     )
 
 
+def _password_hash(password, salt):
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
+    )
+
+
+def _validate_new_password(password, confirm_password):
+    if not 8 <= len(password) <= 128:
+        raise AuthError(
+            400, "invalid_password", "auth.invalid_password_length"
+        )
+    if password != confirm_password:
+        raise AuthError(400, "password_mismatch", "auth.password_mismatch")
+    if not all(
+        re.search(pattern, password)
+        for pattern in (r"[A-Z]", r"[a-z]", r"[0-9]")
+    ):
+        raise AuthError(400, "weak_password", "auth.password_strength")
+
+
 def authenticate(fields):
     mode = fields.get("mode", "login")
     if mode not in {"login", "register"}:
@@ -70,24 +90,14 @@ def authenticate(fields):
     if mode == "register":
         if user is not None:
             raise AuthError(409, "username_exists", "auth.username_exists")
-        if password != confirm_password:
-            raise AuthError(400, "password_mismatch", "auth.password_mismatch")
-        if not all(
-            re.search(pattern, password)
-            for pattern in (r"[A-Z]", r"[a-z]", r"[0-9]")
-        ):
-            raise AuthError(400, "weak_password", "auth.password_strength")
+        _validate_new_password(password, confirm_password)
         salt = secrets.token_bytes(16)
-        password_hash = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS
-        )
+        password_hash = _password_hash(password, salt)
         user_id = db_manager.create_user(username, salt, password_hash)
     else:
         if user is None:
             raise AuthError(404, "username_missing", "auth.username_missing")
-        supplied_hash = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), user[2], PASSWORD_ITERATIONS
-        )
+        supplied_hash = _password_hash(password, user[2])
         if not hmac.compare_digest(supplied_hash, user[3]):
             raise AuthError(401, "invalid_credentials", "auth.invalid_credentials")
         user_id = user[0]
@@ -98,6 +108,29 @@ def authenticate(fields):
         200 if mode == "login" else 201,
         _create_session(user_id),
     )
+
+
+def change_password(user_id, username, fields):
+    current_password = fields.get("current_password", "")
+    new_password = fields.get("new_password", "")
+    confirm_password = fields.get("confirm_password", "")
+    if fields.keys() != {
+        "current_password",
+        "new_password",
+        "confirm_password",
+    }:
+        raise AuthError(400, "invalid_fields", "profile.invalid_password")
+    user = db_manager.get_user_auth_record(username)
+    if user is None or user[0] != user_id:
+        raise AuthError(401, "unauthorized", "auth.login_required")
+    supplied_hash = _password_hash(current_password, user[2])
+    if not hmac.compare_digest(supplied_hash, user[3]):
+        raise AuthError(
+            401, "invalid_current_password", "profile.current_password_invalid"
+        )
+    _validate_new_password(new_password, confirm_password)
+    salt = secrets.token_bytes(16)
+    db_manager.update_user_password(user_id, salt, _password_hash(new_password, salt))
 
 
 def logout(cookie_header):

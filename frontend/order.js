@@ -58,7 +58,7 @@ async function initOrdersPage() {
 			button.className = "delete";
 			button.textContent = App.t("order.delete");
 			button.addEventListener("click", async () => {
-				if (!window.confirm(App.t("order.confirm_delete", { id: order.id }))) return;
+				if (!await App.confirm(App.t("order.confirm_delete", { id: order.id }))) return;
 				button.disabled = true;
 				App.setNotice("");
 				try {
@@ -90,14 +90,15 @@ async function initBookOrderPage() {
 	const form = document.getElementById("order-form");
 	const result = document.getElementById("order-pricing-result");
 	const save = document.getElementById("order-save");
-	const recalculate = document.getElementById("order-recalculate");
 	const quoteSelect = document.getElementById("order-quotation");
+	const supplierSelect = document.getElementById("order-supplier");
 	const quoteHint = document.getElementById("order-quotation-hint");
 	const deliveryDate = document.getElementById("order-delivery-date");
 	const pricingInputs = new Map();
 	const quotationInputs = new Map();
 	let pricingRequest = 0;
 	let quotations = [];
+	let suppliers = [];
 	let draft;
 	try {
 		draft = JSON.parse(sessionStorage.getItem("orderDraft") || "{}");
@@ -132,7 +133,11 @@ async function initBookOrderPage() {
 		["manual", "market.sudan_manual_benchmark"],
 	]);
 	source.value = draft.benchmarkSource || "manual";
-	addField(document.getElementById("order-pricing-fields"), "market.sudan_benchmark_source_label", source);
+	const visiblePricingFields = new Set([
+		"supplier_quote_usd_per_ton",
+		"supplier_quote_basis",
+		"quantity_tons",
+	]);
 	for (const [name, label, type] of ORDER_PRICING_FIELDS) {
 		const input = type ? makeSelect(ORDER_SELECT_OPTIONS[type]) : document.createElement("input");
 		if (!type) {
@@ -144,7 +149,9 @@ async function initBookOrderPage() {
 		const value = draft.pricing?.[name] ?? SUDAN_COTTON_DEFAULTS[name];
 		input.value = name === "supplier_quote_usd_per_ton" ? usdPerTonToUsc(value) : value;
 		pricingInputs.set(name, input);
-		addField(document.getElementById("order-pricing-fields"), label, input);
+		if (visiblePricingFields.has(name)) {
+			addField(document.getElementById("order-pricing-fields"), label, input);
+		}
 	}
 	for (const name of COTTON_QUOTATION_TABLES[0].columns) {
 		const input = document.createElement("input");
@@ -174,6 +181,7 @@ async function initBookOrderPage() {
 			pricing,
 			quotation: Object.fromEntries([...quotationInputs].map(([key, input]) => [key, input.value])),
 			benchmarkSource: source.value,
+			supplierId: supplierSelect.value,
 			quotationId: quoteSelect.value,
 			deliveryDate: deliveryDate.value,
 		};
@@ -221,6 +229,13 @@ async function initBookOrderPage() {
 		});
 	}
 	source.addEventListener("change", rememberDraft);
+	supplierSelect.addEventListener("change", () => {
+		App.setNotice("");
+		rememberDraft();
+		if (supplierSelect.value === "__new__") {
+			window.location.href = "supplier.html?return=book_order.html";
+		}
+	});
 	deliveryDate.addEventListener("input", rememberDraft);
 	quotationInputs.get("net_weight_tons").readOnly = true;
 	for (const input of quotationInputs.values()) input.addEventListener("input", rememberDraft);
@@ -232,6 +247,28 @@ async function initBookOrderPage() {
 		App.setNotice("");
 		rememberDraft();
 	});
+
+	try {
+		const data = await App.api("/api/suppliers");
+		if (!Array.isArray(data.suppliers)) throw new Error(App.t("supplier.list_invalid"));
+		suppliers = data.suppliers;
+		const createOption = [...supplierSelect.children].find(
+			(option) => option.value === "__new__",
+		);
+		for (const supplier of suppliers) {
+			const option = document.createElement("option");
+			option.value = String(supplier.id);
+			option.textContent = `${supplier.short_name} · ${supplier.company_name}`;
+			if (createOption) supplierSelect.insertBefore(option, createOption);
+			else supplierSelect.append(option);
+		}
+		const draftSupplierId = String(draft.supplierId || "");
+		supplierSelect.value = suppliers.some(
+			(supplier) => String(supplier.id) === draftSupplierId,
+		) ? draftSupplierId : "";
+	} catch (error) {
+		if (handleUnauthorized(error, "book_order.html")) return;
+	}
 
 	if (!draft.quotationId) syncQuote(null);
 	quotationInputs.get("net_weight_tons").readOnly = true;
@@ -262,44 +299,28 @@ async function initBookOrderPage() {
 		if (draft.quotationId) save.disabled = true;
 	}
 
-	recalculate.addEventListener("click", async () => {
-		const requestId = ++pricingRequest;
-		App.setNotice("");
-		result.textContent = "";
-		try {
-			const response = await App.api("/api/sudan-cotton-pricing", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(currentDraft().pricing),
-			});
-			if (requestId !== pricingRequest) return;
-			const formatter = new Intl.NumberFormat(document.documentElement.lang, { maximumFractionDigits: 2 });
-			result.textContent = App.t("order.calculated", {
-				target: formatter.format(response.max_target_cif_usd_per_ton),
-				break_even: formatter.format(response.break_even_cif_usd_per_ton),
-			});
-			if (response.supplier_evaluation) {
-				result.textContent += ` ${App.t("order.quote_calculated", {
-					cif: formatter.format(response.supplier_evaluation.cif_usd_per_ton),
-					profit: formatter.format(response.supplier_evaluation.profit_cny_per_ton),
-				})}`;
-			}
-		} catch (error) {
-			if (requestId === pricingRequest) handleUnauthorized(error, "book_order.html");
-		}
-	});
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
 		if (!rememberDraft()) return;
 		const data = currentDraft();
-		const fields = { benchmark_source: data.benchmarkSource, quotation_id: data.quotationId, delivery_date: data.deliveryDate };
+		if (!data.supplierId || data.supplierId === "__new__") {
+			App.setNotice(App.t("supplier.required"));
+			supplierSelect.focus();
+			return;
+		}
+		const fields = {
+			benchmark_source: data.benchmarkSource,
+			supplier_id: data.supplierId,
+			quotation_id: data.quotationId,
+			delivery_date: data.deliveryDate,
+		};
 		for (const [key, value] of Object.entries(data.pricing)) fields[`pricing_${key}`] = value;
 		for (const [key, value] of Object.entries(data.quotation)) fields[`quotation_${key}`] = value;
 		App.setNotice("");
 		save.disabled = true;
-		recalculate.disabled = true;
 		source.disabled = true;
 		deliveryDate.disabled = true;
+		supplierSelect.disabled = true;
 		quoteSelect.disabled = true;
 		for (const input of [...pricingInputs.values(), ...quotationInputs.values()]) input.disabled = true;
 		try {
@@ -323,9 +344,9 @@ async function initBookOrderPage() {
 		} catch (error) {
 			handleUnauthorized(error, "book_order.html");
 			save.disabled = false;
-			recalculate.disabled = false;
 			source.disabled = false;
 			deliveryDate.disabled = false;
+			supplierSelect.disabled = false;
 			quoteSelect.disabled = false;
 			for (const input of [...pricingInputs.values(), ...quotationInputs.values()]) input.disabled = false;
 		}

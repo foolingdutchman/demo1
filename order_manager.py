@@ -37,7 +37,7 @@ def validate_order(fields, allow_quotation_id):
         {f"pricing_{field}" for field in PRICING_FIELDS}
         | {f"quotation_{field}" for field in quotation_manager.QUOTATION_TYPES}
         | {f"quotation_{field}" for field in SOURCE_FIELDS}
-        | {"benchmark_source", "delivery_date"}
+        | {"benchmark_source", "delivery_date", "supplier_id"}
     )
     if allow_quotation_id:
         allowed.add("quotation_id")
@@ -50,7 +50,44 @@ def validate_order(fields, allow_quotation_id):
         raise ValueError("Invalid benchmark source")
     if not pricing["quantity_tons"].strip() or not pricing["supplier_quote_usd_per_ton"].strip():
         raise ValueError("Quantity and supplier price are required")
-    result = sudan_cotton_pricing.calculate_sudan_cotton_pricing(pricing)
+    hidden_pricing_available = (
+        pricing["domestic_benchmark_cny_per_ton"].strip()
+        and pricing["fx_cny_per_usd"].strip()
+    )
+    if hidden_pricing_available:
+        result = sudan_cotton_pricing.calculate_sudan_cotton_pricing(pricing)
+    else:
+        quantity = float(pricing["quantity_tons"])
+        supplier_quote = float(pricing["supplier_quote_usd_per_ton"])
+        if quantity <= 0 or supplier_quote <= 0:
+            raise ValueError("Quantity and supplier price are required")
+        if pricing["supplier_quote_basis"] not in {"CIF", "FOB"}:
+            raise ValueError("Invalid supplier quote basis")
+        supplier_cif = supplier_quote
+        if pricing["supplier_quote_basis"] == "FOB":
+            supplier_cif += sum(
+                float(pricing[field] or 0)
+                for field in (
+                    "ocean_freight_usd_per_ton",
+                    "insurance_usd_per_ton",
+                    "other_cif_cost_usd_per_ton",
+                )
+            )
+        result = {
+            "inputs": {
+                **pricing,
+                "quantity_tons": quantity,
+                "supplier_quote_usd_per_ton": supplier_quote,
+                "supplier_quote_basis": pricing["supplier_quote_basis"],
+            },
+            "max_target_cif_usd_per_ton": supplier_cif,
+            "break_even_cif_usd_per_ton": supplier_cif,
+            "supplier_evaluation": {
+                "cif_usd_per_ton": supplier_cif,
+                "profit_cny_per_ton": 0,
+            },
+            "scenarios": {"fx": [], "supplier_quote": []},
+        }
     if result["inputs"]["quantity_tons"] is None or result["inputs"]["supplier_quote_usd_per_ton"] is None:
         raise ValueError("Quantity and supplier price are required")
     data = {field: quotation.get(field, "") for field in quotation_manager.QUOTATION_TYPES}
@@ -60,8 +97,15 @@ def validate_order(fields, allow_quotation_id):
     )["quotation_date"]
     for field in SOURCE_FIELDS:
         values[field] = quotation.get(field, "").strip() or None
+    raw_supplier_id = fields.get("supplier_id", "")
+    if raw_supplier_id:
+        if not re.fullmatch(r"[1-9]\d{0,18}", raw_supplier_id) or int(raw_supplier_id) >= 2 ** 63:
+            raise ValueError("Invalid supplier id")
+        supplier_id = int(raw_supplier_id)
+    else:
+        supplier_id = None
     return (
-        values, source, delivery_date,
+        supplier_id, values, source, delivery_date,
         json.dumps(pricing, ensure_ascii=False, allow_nan=False),
         json.dumps(result, ensure_ascii=False, allow_nan=False),
         result["inputs"]["quantity_tons"], result["inputs"]["supplier_quote_usd_per_ton"],
@@ -71,6 +115,8 @@ def validate_order(fields, allow_quotation_id):
 
 def create_order(user_id, fields):
     values = validate_order(fields, allow_quotation_id=True)
+    if values[0] is None or not db_manager.supplier_belongs_to_user(user_id, values[0]):
+        raise ValueError("Supplier is required")
     raw_id = fields.get("quotation_id", "")
     if raw_id:
         if not re.fullmatch(r"[1-9][0-9]{0,18}", raw_id) or int(raw_id) >= 2 ** 63:
@@ -78,8 +124,20 @@ def create_order(user_id, fields):
         quotation_id = int(raw_id)
     else:
         quotation_id = None
-    return db_manager.create_order(user_id, quotation_id, *values)
+    return db_manager.create_order(
+        user_id, values[0], quotation_id, *values[1:]
+    )
 
 
 def update_order(user_id, order_id, fields):
-    return db_manager.update_order(user_id, order_id, *validate_order(fields, allow_quotation_id=False))
+    values = validate_order(fields, allow_quotation_id=False)
+    owned_orders = db_manager.list_orders(user_id, order_id)
+    if not owned_orders:
+        return {"updated": 0, "purchase_contract_deleted": 0}
+    if values[0] is not None and not db_manager.supplier_belongs_to_user(
+        user_id, values[0]
+    ):
+        raise ValueError("Supplier is required")
+    if values[0] is None:
+        values = (owned_orders[0].get("supplier_id"), *values[1:])
+    return db_manager.update_order(user_id, order_id, *values)
