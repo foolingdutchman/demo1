@@ -30,6 +30,29 @@ window.App = (() => {
 		return data;
 	}
 
+	async function download(path) {
+		const base = window.API_BASE_URL.replace(/\/+$/, "");
+		const url = new URL(`${base}${path}`);
+		url.searchParams.set("locale", locale);
+		const response = await fetch(url, { credentials: "include" });
+		if (!response.ok) {
+			const data = await response.json();
+			const error = new Error(data.error?.message || response.statusText);
+			error.status = response.status;
+			throw error;
+		}
+		const blob = await response.blob();
+		const disposition = response.headers.get("Content-Disposition") || "";
+		const filename = disposition.match(/filename="?([^";]+)"?/)?.[1] || "purchase-contract.pdf";
+		const objectUrl = URL.createObjectURL(blob);
+		const link = document.createElement("a");
+		link.href = objectUrl;
+		link.download = filename;
+		link.click();
+		URL.revokeObjectURL(objectUrl);
+		return filename;
+	}
+
 	async function init() {
 		const requested = localStorage.getItem("language") || navigator.language || "";
 		locale = requested.toLowerCase().startsWith("en") ? "en" : "zh-CN";
@@ -69,5 +92,5 @@ window.App = (() => {
 		return `${window.API_BASE_URL.replace(/\/+$/, "")}${path}`;
 	}
 
-	return { api, assetUrl, init, setNotice, t: translate };
+	return { api, assetUrl, download, init, setNotice, t: translate };
 })();

@@ -76,6 +76,8 @@ test("order detail renders snapshots, edits fields and confirms deletion", async
 	assert.equal(find(quoteFields, "market.cotton_column.batch_number").textContent, "<script>");
 	assert.equal(find(quoteFields, "order.delivery_date").textContent, "—");
 	assert.match(content.children[7].children[1].textContent, /"fx_cny_per_usd": 6.7/);
+	elements.get("order-documents").events.click();
+	assert.equal(window.location.href, "order_docs.html?id=5");
 	elements.get("order-edit").events.click();
 	const groups = elements.get("order-edit-fields").children;
 	const quoteInputs = groups[1].children;

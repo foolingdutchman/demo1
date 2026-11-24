@@ -22,6 +22,7 @@ async function initOrderDetailPage() {
 	const fields = document.getElementById("order-edit-fields");
 	const status = document.getElementById("order-detail-status");
 	const edit = document.getElementById("order-edit");
+	const documents = document.getElementById("order-documents");
 	const remove = document.getElementById("order-delete");
 	const update = document.getElementById("order-update");
 	const cancel = document.getElementById("order-cancel-edit");
@@ -161,6 +162,9 @@ async function initOrderDetailPage() {
 		actions.hidden = true;
 	}
 	edit.addEventListener("click", editOrder);
+	documents.addEventListener("click", () => {
+		window.location.href = `order_docs.html?id=${id}`;
+	});
 	cancel.addEventListener("click", () => {
 		form.hidden = true;
 		content.hidden = false;

@@ -62,6 +62,7 @@ def initialize_database():
                 )
         initialize_cotton_quotations(connection)
         initialize_orders(connection)
+        initialize_order_documents(connection)
 
 
 def initialize_orders(connection):
@@ -91,6 +92,23 @@ def initialize_orders(connection):
     columns = {row[1] for row in connection.execute("PRAGMA table_info(orders)")}
     if "delivery_date" not in columns:
         connection.execute("ALTER TABLE orders ADD COLUMN delivery_date TEXT")
+
+
+def initialize_order_documents(connection):
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS order_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            document_type TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            content BLOB NOT NULL,
+            UNIQUE(order_id, document_type)
+        )"""
+    )
 
 
 def initialize_cotton_quotations(connection):
@@ -355,6 +373,65 @@ def list_orders(user_id, order_id=None):
     return orders
 
 
+def list_order_documents(user_id, order_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        rows = connection.execute(
+            """SELECT id, document_type, filename, content_type, size_bytes, created_at
+               FROM order_documents
+               WHERE user_id = ? AND order_id = ?
+               ORDER BY id DESC""",
+            (user_id, order_id),
+        ).fetchall()
+    return [
+        dict(zip(
+            ("id", "document_type", "filename", "content_type", "size_bytes", "created_at"),
+            row,
+        ))
+        for row in rows
+    ]
+
+
+def get_order_document(user_id, order_id, document_type):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        return connection.execute(
+            """SELECT filename, content_type, content
+               FROM order_documents
+               WHERE user_id = ? AND order_id = ? AND document_type = ?""",
+            (user_id, order_id, document_type),
+        ).fetchone()
+
+
+def create_order_document(
+    user_id, order_id, document_type, filename, content_type, content
+):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """INSERT OR IGNORE INTO order_documents
+               (user_id, order_id, document_type, filename, content_type, size_bytes, content)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                order_id,
+                document_type,
+                filename,
+                content_type,
+                len(content),
+                content,
+            ),
+        )
+        row = connection.execute(
+            """SELECT id, document_type, filename, content_type, size_bytes, created_at
+               FROM order_documents
+               WHERE user_id = ? AND order_id = ? AND document_type = ?""",
+            (user_id, order_id, document_type),
+        ).fetchone()
+    return dict(zip(
+        ("id", "document_type", "filename", "content_type", "size_bytes", "created_at"),
+        row,
+    ))
+
+
 def create_order(user_id, quotation_id, quotation, benchmark_source, delivery_date, pricing_inputs,
                  pricing_result, quantity_tons, supplier_price, quote_basis):
     allowed = {
@@ -431,9 +508,15 @@ def update_order(user_id, order_id, quotation, benchmark_source, delivery_date,
 
 def delete_order(user_id, order_id):
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
-        return connection.execute(
+        cursor = connection.execute(
             "DELETE FROM orders WHERE id = ? AND user_id = ?", (order_id, user_id)
-        ).rowcount
+        )
+        if cursor.rowcount:
+            connection.execute(
+                "DELETE FROM order_documents WHERE order_id = ? AND user_id = ?",
+                (order_id, user_id),
+            )
+        return cursor.rowcount
 
 
 class QuotationAlreadyOrdered(ValueError):

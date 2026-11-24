@@ -20,6 +20,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 			await initOrdersPage();
 		} else if (page === "order-detail") {
 			await initOrderDetailPage();
+		} else if (page === "order-docs") {
+			await initOrderDocumentsPage();
 		} else if (page === "detail") {
 			await initDetailPage();
 		}

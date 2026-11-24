@@ -20,6 +20,7 @@ import excel_analysis
 import order_manager
 import pandas as pd
 from openpyxl import Workbook
+from pypdf import PdfReader
 
 
 class ApiIntegrationTests(unittest.TestCase):
@@ -428,6 +429,13 @@ class ApiIntegrationTests(unittest.TestCase):
         body = lambda data: json.dumps(data).encode()
         self.assertEqual(self.request("/api/orders").code, 401)
         self.assertEqual(self.request("/api/orders/1").code, 401)
+        self.assertEqual(self.request("/api/orders/1/documents").code, 401)
+        self.assertEqual(
+            self.request(
+                "/api/orders/1/documents/purchase_contract", "POST"
+            ).code,
+            401,
+        )
         self.assertEqual(self.request("/api/orders/1", "DELETE").code, 401)
         self.assertEqual(self.request("/api/orders/1", "PATCH", body({}), headers).code, 401)
         self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 401)
@@ -503,6 +511,78 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(orders[1]["delivery_date"], "2026-12-10")
         self.assertEqual(orders[1]["pricing_result"]["supplier_evaluation"]["cif_usd_per_ton"], 1200)
         self.assertNotIn("user_id", orders[1])
+        documents_path = f"/api/orders/{order_id}/documents"
+        self.assertEqual(
+            json.loads(self.request(documents_path).read()),
+            {"documents": []},
+        )
+        generated = self.request(
+            f"{documents_path}/purchase_contract", "POST"
+        )
+        self.assertEqual(generated.code, 201)
+        generated_document = json.loads(generated.read())["document"]
+        self.assertEqual(generated_document["document_type"], "purchase_contract")
+        self.assertEqual(
+            generated_document["filename"],
+            f"purchase-contract-{order_id}.pdf",
+        )
+        self.assertEqual(
+            self.request(
+                f"{documents_path}/purchase_contract", "POST"
+            ).code,
+            200,
+        )
+        documents = json.loads(self.request(documents_path).read())["documents"]
+        self.assertEqual(len(documents), 1)
+        boundary = "order-document-boundary"
+        related_body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="invoice.pdf"\r\n'
+            "Content-Type: application/pdf\r\n\r\n"
+        ).encode() + b"%PDF related document" + f"\r\n--{boundary}--\r\n".encode()
+        related = self.request(
+            f"{documents_path}/related_documents",
+            "POST",
+            related_body,
+            {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        self.assertEqual(related.code, 201)
+        self.assertEqual(
+            json.loads(related.read())["document"]["filename"], "invoice.pdf"
+        )
+        downloaded_related = self.request(
+            f"{documents_path}/related_documents/content"
+        )
+        self.assertEqual(downloaded_related.read(), b"%PDF related document")
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM order_documents "
+                    "WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()[:1],
+                (2,),
+            )
+        contract = self.request(
+            f"{documents_path}/purchase_contract/content"
+        )
+        self.assertEqual(contract.code, 200)
+        self.assertEqual(contract.headers.get_content_type(), "application/pdf")
+        self.assertIn(
+            f"purchase-contract-{order_id}.pdf",
+            contract.headers["Content-Disposition"],
+        )
+        contract_pdf = contract.read()
+        self.assertTrue(contract_pdf.startswith(b"%PDF"))
+        contract_text = "".join(
+            page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(contract_pdf)).pages
+        )
+        self.assertIn("SALES CONTRACT", contract_text)
+        self.assertIn(f"PC-{order_id:06d}", contract_text)
+        self.assertIn("api_test_user", contract_text)
+        self.assertIn("115,000.00", contract_text)
+        self.assertNotIn("{quantity}", contract_text)
         self.assertEqual(self.request("/api/logout", "POST").code, 200)
         other_user = {
             "mode": "register", "username": "other_user",
@@ -510,6 +590,13 @@ class ApiIntegrationTests(unittest.TestCase):
         }
         self.assertEqual(self.request("/api/auth", "POST", body(other_user), headers).code, 201)
         self.assertEqual(json.loads(self.request("/api/orders").read()), {"orders": []})
+        self.assertEqual(self.request(documents_path).code, 404)
+        self.assertEqual(
+            self.request(
+                f"{documents_path}/purchase_contract/content"
+            ).code,
+            404,
+        )
         stored_order = orders[1]
         update_fields = {key: value for key, value in fields.items() if key != "quotation_id"}
         for name in (*order_manager.quotation_manager.QUOTATION_TYPES, *order_manager.SOURCE_FIELDS):
