@@ -71,6 +71,7 @@ async function initOrderDetailPage() {
 			["order.created_at", order.created_at], ["order.delivery_date", order.delivery_date],
 			["order.source_quotation", order.source_quotation_id],
 			["supplier.select", order.supplier_short_name],
+			["supplier.intermediary_select", order.intermediary_short_name],
 			...COTTON_QUOTATION_TABLES[0].columns.map((name) =>
 				[`market.cotton_column.${name}`, order[name]]),
 		]);

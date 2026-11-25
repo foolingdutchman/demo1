@@ -37,7 +37,7 @@ def validate_order(fields, allow_quotation_id):
         {f"pricing_{field}" for field in PRICING_FIELDS}
         | {f"quotation_{field}" for field in quotation_manager.QUOTATION_TYPES}
         | {f"quotation_{field}" for field in SOURCE_FIELDS}
-        | {"benchmark_source", "delivery_date", "supplier_id"}
+        | {"benchmark_source", "delivery_date", "supplier_id", "intermediary_id"}
     )
     if allow_quotation_id:
         allowed.add("quotation_id")
@@ -104,8 +104,20 @@ def validate_order(fields, allow_quotation_id):
         supplier_id = int(raw_supplier_id)
     else:
         supplier_id = None
+    raw_intermediary_id = fields.get("intermediary_id", "")
+    if raw_intermediary_id:
+        if (
+            not re.fullmatch(r"[1-9]\d{0,18}", raw_intermediary_id)
+            or int(raw_intermediary_id) >= 2 ** 63
+        ):
+            raise ValueError("Invalid intermediary id")
+        intermediary_id = int(raw_intermediary_id)
+    else:
+        intermediary_id = None
+    if supplier_id == intermediary_id:
+        raise ValueError("Supplier and intermediary must differ")
     return (
-        supplier_id, values, source, delivery_date,
+        supplier_id, intermediary_id, values, source, delivery_date,
         json.dumps(pricing, ensure_ascii=False, allow_nan=False),
         json.dumps(result, ensure_ascii=False, allow_nan=False),
         result["inputs"]["quantity_tons"], result["inputs"]["supplier_quote_usd_per_ton"],
@@ -125,7 +137,7 @@ def create_order(user_id, fields):
     else:
         quotation_id = None
     return db_manager.create_order(
-        user_id, values[0], quotation_id, *values[1:]
+        user_id, values[0], values[1], quotation_id, *values[2:]
     )
 
 
@@ -138,6 +150,12 @@ def update_order(user_id, order_id, fields):
         user_id, values[0]
     ):
         raise ValueError("Supplier is required")
+    if values[1] is not None and not db_manager.supplier_belongs_to_user(
+        user_id, values[1]
+    ):
+        raise ValueError("Intermediary is invalid")
     if values[0] is None:
         values = (owned_orders[0].get("supplier_id"), *values[1:])
+    if values[1] is None:
+        values = (values[0], owned_orders[0].get("intermediary_id"), *values[2:])
     return db_manager.update_order(user_id, order_id, *values)

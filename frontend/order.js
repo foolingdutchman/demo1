@@ -92,6 +92,7 @@ async function initBookOrderPage() {
 	const save = document.getElementById("order-save");
 	const quoteSelect = document.getElementById("order-quotation");
 	const supplierSelect = document.getElementById("order-supplier");
+	const intermediarySelect = document.getElementById("order-intermediary");
 	const quoteHint = document.getElementById("order-quotation-hint");
 	const deliveryDate = document.getElementById("order-delivery-date");
 	const pricingInputs = new Map();
@@ -182,6 +183,7 @@ async function initBookOrderPage() {
 			quotation: Object.fromEntries([...quotationInputs].map(([key, input]) => [key, input.value])),
 			benchmarkSource: source.value,
 			supplierId: supplierSelect.value,
+			intermediaryId: intermediarySelect.value,
 			quotationId: quoteSelect.value,
 			deliveryDate: deliveryDate.value,
 		};
@@ -212,6 +214,27 @@ async function initBookOrderPage() {
 			return false;
 		}
 	}
+	function renderIntermediaryOptions(selectedValue = "") {
+		intermediarySelect.replaceChildren();
+		const empty = document.createElement("option");
+		empty.value = "";
+		empty.textContent = App.t("supplier.intermediary_optional");
+		intermediarySelect.append(empty);
+		for (const supplier of suppliers) {
+			if (String(supplier.id) === supplierSelect.value) continue;
+			const option = document.createElement("option");
+			option.value = String(supplier.id);
+			option.textContent = `${supplier.short_name} · ${supplier.company_name}`;
+			intermediarySelect.append(option);
+		}
+		const create = document.createElement("option");
+		create.value = "__new__";
+		create.textContent = App.t("supplier.create_option");
+		intermediarySelect.append(create);
+		intermediarySelect.value = [...intermediarySelect.children].some(
+			(option) => option.value === selectedValue,
+		) ? selectedValue : "";
+	}
 	for (const [name, input] of pricingInputs) {
 		input.addEventListener("input", () => {
 			if (name === "domestic_benchmark_cny_per_ton") source.value = "manual";
@@ -231,9 +254,17 @@ async function initBookOrderPage() {
 	source.addEventListener("change", rememberDraft);
 	supplierSelect.addEventListener("change", () => {
 		App.setNotice("");
+		renderIntermediaryOptions(intermediarySelect.value);
 		rememberDraft();
 		if (supplierSelect.value === "__new__") {
 			window.location.href = "supplier.html?return=book_order.html";
+		}
+	});
+	intermediarySelect.addEventListener("change", () => {
+		App.setNotice("");
+		rememberDraft();
+		if (intermediarySelect.value === "__new__") {
+			window.location.href = "supplier.html?return=book_order.html&role=intermediary";
 		}
 	});
 	deliveryDate.addEventListener("input", rememberDraft);
@@ -266,6 +297,8 @@ async function initBookOrderPage() {
 		supplierSelect.value = suppliers.some(
 			(supplier) => String(supplier.id) === draftSupplierId,
 		) ? draftSupplierId : "";
+		const draftIntermediaryId = String(draft.intermediaryId || "");
+		renderIntermediaryOptions(draftIntermediaryId);
 	} catch (error) {
 		if (handleUnauthorized(error, "book_order.html")) return;
 	}
@@ -308,9 +341,21 @@ async function initBookOrderPage() {
 			supplierSelect.focus();
 			return;
 		}
+		if (
+			data.intermediaryId
+			&& data.intermediaryId !== "__new__"
+			&& data.intermediaryId === data.supplierId
+		) {
+			App.setNotice(App.t("supplier.same_party"));
+			intermediarySelect.focus();
+			return;
+		}
 		const fields = {
 			benchmark_source: data.benchmarkSource,
 			supplier_id: data.supplierId,
+			intermediary_id: data.intermediaryId === "__new__"
+				? ""
+				: data.intermediaryId,
 			quotation_id: data.quotationId,
 			delivery_date: data.deliveryDate,
 		};
@@ -321,6 +366,7 @@ async function initBookOrderPage() {
 		source.disabled = true;
 		deliveryDate.disabled = true;
 		supplierSelect.disabled = true;
+		intermediarySelect.disabled = true;
 		quoteSelect.disabled = true;
 		for (const input of [...pricingInputs.values(), ...quotationInputs.values()]) input.disabled = true;
 		try {
@@ -347,6 +393,7 @@ async function initBookOrderPage() {
 			source.disabled = false;
 			deliveryDate.disabled = false;
 			supplierSelect.disabled = false;
+			intermediarySelect.disabled = false;
 			quoteSelect.disabled = false;
 			for (const input of [...pricingInputs.values(), ...quotationInputs.values()]) input.disabled = false;
 		}

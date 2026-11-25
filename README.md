@@ -28,6 +28,17 @@ Start the frontend:
 
 Open `http://127.0.0.1:5500`. The frontend script serves only the static files; the API must also be running. Its address is configured in `frontend/api-config.js`. If PowerShell blocks the script, run it with `powershell -ExecutionPolicy Bypass -File .\frontend\start.ps1`. If the frontend is hosted on another origin, set the backend `CORS_ORIGINS` environment variable to a comma-separated list of allowed origins before starting the API.
 
+## Local document OCR
+
+Order-related document images are recognized locally with PaddleOCR, not through the AI analysis API. Because PaddlePaddle does not publish Windows wheels for the project's Python 3.15 runtime, install its CPU environment with Python 3.12:
+
+```powershell
+py -3.12 -m venv .venv-ocr
+.\.venv-ocr\Scripts\python.exe -m pip install -r requirements-ocr.txt
+```
+
+The main API keeps using `.venv` and invokes `.venv-ocr\Scripts\python.exe` for image OCR. OCR models are downloaded and cached on first use. No API key is required for related-document image recognition.
+
 ## API
 
 All application data endpoints return JSON. Errors use the shape `{"error":{"code":"...","message":"..."}}`. The API uses an HTTP-only session cookie, so browser requests include credentials.

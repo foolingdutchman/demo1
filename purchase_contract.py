@@ -65,24 +65,39 @@ def _number(value, places=2, default="—"):
     return rendered or "0"
 
 
-def build_contract_context(order, username, profile=None):
+def build_contract_context(order, username, profile=None, party_role="direct"):
     profile = profile or {}
     quantity = _decimal(order.get("quantity_tons"))
     price_usd_per_ton = _decimal(order.get("supplier_price_usd_per_ton"))
     quotation_date = _text(order.get("quotation_date"), default="")
     created_at = _text(order.get("created_at"), default="")
-    seller = (
-        order.get("supplier_company_name")
-        or order.get("processor")
-        or order.get("origin")
-    )
+    user_company = profile.get("company_name") or username
+    user_address = profile.get("company_address")
+    if party_role == "supplier_intermediary":
+        seller = order.get("supplier_company_name") or order.get("processor") or order.get("origin")
+        seller_address = order.get("supplier_address")
+        buyer = order.get("intermediary_company_name")
+        buyer_address = order.get("intermediary_address")
+        number_suffix = "-A"
+    elif party_role == "intermediary_user":
+        seller = order.get("intermediary_company_name")
+        seller_address = order.get("intermediary_address")
+        buyer = user_company
+        buyer_address = user_address
+        number_suffix = "-B"
+    else:
+        seller = order.get("supplier_company_name") or order.get("processor") or order.get("origin")
+        seller_address = order.get("supplier_address")
+        buyer = user_company
+        buyer_address = user_address
+        number_suffix = ""
     return {
-        "contract_no": f"PC-{int(order['id']):06d}",
+        "contract_no": f"PC-{int(order['id']):06d}{number_suffix}",
         "date": created_at[:10] or quotation_date,
         "seller": _text(seller),
-        "seller_address": _text(order.get("supplier_address")),
-        "buyer": _text(profile.get("company_name") or username),
-        "buyer_address": _text(profile.get("company_address")),
+        "seller_address": _text(seller_address),
+        "buyer": _text(buyer),
+        "buyer_address": _text(buyer_address),
         "crop_year": quotation_date[:4] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", quotation_date) else "—",
         "staple_length": _number(order.get("length_mm")),
         "mic": _number(order.get("micronaire")),
@@ -95,12 +110,12 @@ def build_contract_context(order, username, profile=None):
     }
 
 
-def render_contract_text(order, username, template_text=None, profile=None):
+def render_contract_text(order, username, template_text=None, profile=None, party_role="direct"):
     try:
         template = template_text if template_text is not None else TEMPLATE_PATH.read_text(encoding="utf-8")
     except OSError as error:
         raise ContractGenerationError("Purchase contract template is unavailable") from error
-    values = build_contract_context(order, username, profile)
+    values = build_contract_context(order, username, profile, party_role)
     try:
         rendered = template.format(**values).strip()
     except (KeyError, ValueError) as error:
@@ -317,12 +332,14 @@ def _contract_flowables(text, styles, context):
     return flowables
 
 
-def build_contract_pdf(order, username, profile=None):
-    text = render_contract_text(order, username, profile=profile)
+def build_contract_pdf(order, username, profile=None, party_role="direct"):
+    text = render_contract_text(
+        order, username, profile=profile, party_role=party_role
+    )
     pdf = BytesIO()
     font_name = "STSong-Light"
     pdfmetrics.registerFont(UnicodeCIDFont(font_name))
-    context = build_contract_context(order, username, profile)
+    context = build_contract_context(order, username, profile, party_role)
     document = SimpleDocTemplate(
         pdf,
         pagesize=(PAGE_WIDTH, PAGE_HEIGHT),

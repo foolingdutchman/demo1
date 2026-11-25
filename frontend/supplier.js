@@ -1,5 +1,10 @@
 async function initSupplierPage() {
-	const next = "supplier.html?return=book_order.html";
+	const params = new URLSearchParams(
+		typeof location === "undefined" ? "" : location.search
+	);
+	const next = params.get("role") === "intermediary"
+		? "supplier.html?return=book_order.html&role=intermediary"
+		: "supplier.html?return=book_order.html";
 	if (!await initAuthenticatedPage(next)) return;
 	document.title = `${App.t("supplier.title")} - ${App.t("site.title")}`;
 	const form = document.getElementById("supplier-form");
@@ -17,7 +22,11 @@ async function initSupplierPage() {
 			});
 			try {
 				const draft = JSON.parse(sessionStorage.getItem("orderDraft") || "{}");
-				draft.supplierId = String(result.supplier.id);
+				if (params.get("role") === "intermediary") {
+					draft.intermediaryId = String(result.supplier.id);
+				} else {
+					draft.supplierId = String(result.supplier.id);
+				}
 				sessionStorage.setItem("orderDraft", JSON.stringify(draft));
 			} catch (error) {
 				App.setNotice(App.t("order.draft_failed"));

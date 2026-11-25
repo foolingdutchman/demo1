@@ -12,6 +12,7 @@ test("order page locks an existing quote and converts the supplier price", async
 		return {
 			children: [], events: {}, textContent: "", value: "", hidden: false,
 			append(...items) { this.children.push(...items); },
+			replaceChildren(...items) { this.children = items; },
 			insertBefore(item) { this.children.unshift(item); },
 			addEventListener(name, callback) { this.events[name] = callback; },
 		};
@@ -173,6 +174,21 @@ test("order page locks an existing quote and converts the supplier price", async
 	assert.equal(find(pricing, "order.quantity_required").value, "100");
 	assert.equal(find(pricing, "order.quantity_required").readOnly, true);
 	elements.get("order-supplier").value = "3";
+	elements.get("order-supplier").events.change();
+	assert.equal(
+		elements.get("order-intermediary").children.some(
+			(option) => option.value === "3",
+		),
+		false,
+	);
+	elements.get("order-intermediary").value = "";
+	elements.get("order-intermediary").value = "__new__";
+	elements.get("order-intermediary").events.change();
+	assert.equal(
+		window.location.href,
+		"supplier.html?return=book_order.html&role=intermediary",
+	);
+	elements.get("order-intermediary").value = "";
 	await elements.get("order-form").events.submit({ preventDefault() {} });
 	const payload = JSON.parse(calls.find((call) => call.url === "/api/orders").options.body);
 	assert.equal(payload.quotation_id, "4");
@@ -181,6 +197,7 @@ test("order page locks an existing quote and converts the supplier price", async
 	assert.equal(payload.quotation_quotation_date, "2026-11-23");
 	assert.equal(payload.delivery_date, "2026-12-10");
 	assert.equal(payload.supplier_id, "3");
+	assert.equal(payload.intermediary_id, "");
 	assert.equal(payload.pricing_domestic_benchmark_cny_per_ton, "15360");
 	assert.equal(payload.pricing_quantity_tons, "100");
 	assert.ok(Math.abs(Number(payload.pricing_supplier_quote_usd_per_ton) - 1102.31) < 1e-8);
@@ -223,6 +240,7 @@ test("order list redirects to login and returns after authentication", async () 
 			return {
 				children: [], events: {}, textContent: "", value: "",
 				append(...items) { this.children.push(...items); },
+				replaceChildren(...items) { this.children = items; },
 				addEventListener(name, callback) { this.events[name] = callback; },
 				remove() {},
 			};

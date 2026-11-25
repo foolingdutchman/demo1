@@ -29,7 +29,7 @@ test("supplier form saves supplier and selects it in the order draft", async () 
 	const requests = [];
 	const window = { location: { href: "" } };
 	const context = vm.createContext({
-		document, window,
+		document, window, location: { search: "?role=intermediary" }, URLSearchParams,
 		FormData: class {
 			entries() {
 				return [
@@ -60,6 +60,6 @@ test("supplier form saves supplier and selects it in the order draft", async () 
 	await elements.get("supplier-form").events.submit({ preventDefault() {} });
 	assert.equal(requests[0].path, "/api/suppliers");
 	assert.equal(JSON.parse(requests[0].options.body).short_name, "SUD");
-	assert.equal(JSON.parse(draft.get("orderDraft")).supplierId, "9");
+	assert.equal(JSON.parse(draft.get("orderDraft")).intermediaryId, "9");
 	assert.equal(window.location.href, "book_order.html");
 });

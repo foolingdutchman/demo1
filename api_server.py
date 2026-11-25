@@ -9,6 +9,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import threading
 from urllib.parse import parse_qs, quote, urlsplit
 
 import ai_analysis
@@ -23,8 +24,17 @@ import sudan_cotton_pricing
 from ai_analysis import TEXT_EXTENSIONS, decode_text_file
 from excel_analysis import EXCEL_EXTENSIONS, ExcelAnalysisError, build_excel_analysis
 from i18n import SUPPORTED_LOCALES, get_locale, get_messages, translate
-from image_analysis import IMAGE_MIME_TYPES, is_image_file
-from pdf_analysis import PDF_EXTENSIONS, PdfAnalysisError, build_pdf_analysis
+from image_analysis import (
+    IMAGE_MIME_TYPES,
+    analyze_image_shipping_document,
+    is_image_file,
+)
+from pdf_analysis import (
+    PDF_EXTENSIONS,
+    PdfAnalysisError,
+    analyze_pdf_shipping_document,
+    build_pdf_analysis,
+)
 
 
 LOCAL_ENV_PATH = Path(__file__).with_name(".env")
@@ -71,6 +81,8 @@ CORS_ORIGINS = {
     ).split(",")
     if origin.strip()
 }
+ANALYZING_RELATED_DOCUMENTS = set()
+ANALYZING_RELATED_DOCUMENTS_LOCK = threading.Lock()
 
 
 def build_preview(filename, upload_id, file_bytes, locale):
@@ -480,15 +492,28 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def _handle_list_order_documents(self, user_id, order_id):
         try:
-            if not db_manager.list_orders(user_id, order_id):
+            orders = db_manager.list_orders(user_id, order_id)
+            if not orders:
                 self._send_error_json(404, "order_not_found", self._t("order.not_found"))
                 return
             documents = db_manager.list_order_documents(user_id, order_id)
+            related_documents = db_manager.list_order_related_documents(
+                user_id, order_id
+            )
+            waybills = db_manager.list_waybills(user_id, order_id)
+            self._queue_pending_document_analysis(
+                user_id, order_id, related_documents, self._locale()
+            )
         except (db_manager.DatabaseError, json.JSONDecodeError):
             logging.exception("Could not read documents for order %s", order_id)
             self._send_error_json(500, "database_error", self._t("request.database_read_error"))
             return
-        self._send_json({"documents": documents})
+        self._send_json({
+            "documents": documents,
+            "related_documents": related_documents,
+            "waybills": waybills,
+            "has_intermediary": bool(orders[0].get("intermediary_id")),
+        })
 
     def _handle_generate_purchase_contract(self, user_id, username, order_id):
         try:
@@ -496,34 +521,50 @@ class ApiHandler(BaseHTTPRequestHandler):
             if not orders:
                 self._send_error_json(404, "order_not_found", self._t("order.not_found"))
                 return
-            existing = db_manager.get_order_document(
-                user_id, order_id, "purchase_contract"
+            existing_documents = {
+                item["document_type"]
+                for item in db_manager.list_order_documents(user_id, order_id)
+            }
+            contract_types = (
+                ["supplier_intermediary_contract", "intermediary_user_contract"]
+                if orders[0].get("intermediary_id")
+                else ["purchase_contract"]
             )
-            if existing is None:
+            missing_types = [
+                document_type
+                for document_type in contract_types
+                if document_type not in existing_documents
+            ]
+            if missing_types:
                 profile = db_manager.get_user_profile(user_id)
                 if profile is None:
                     self._send_error_json(
                         404, "user_not_found", self._t("profile.not_found")
                     )
                     return
-                filename = f"purchase-contract-{order_id}.pdf"
-                pdf = purchase_contract.build_contract_pdf(
-                    orders[0], username, profile
+                generated = []
+                for document_type in missing_types:
+                    party_role = (
+                        "direct"
+                        if document_type == "purchase_contract"
+                        else document_type.removesuffix("_contract")
+                    )
+                    generated.append((
+                        document_type,
+                        f"{document_type.replace('_', '-')}-{order_id}.pdf",
+                        "application/pdf",
+                        purchase_contract.build_contract_pdf(
+                            orders[0], username, profile, party_role
+                        ),
+                    ))
+                db_manager.create_order_documents(
+                    user_id, order_id, generated
                 )
-                document = db_manager.create_order_document(
-                    user_id,
-                    order_id,
-                    "purchase_contract",
-                    filename,
-                    "application/pdf",
-                    pdf,
-                )
-            else:
-                document = next(
-                    item
-                    for item in db_manager.list_order_documents(user_id, order_id)
-                    if item["document_type"] == "purchase_contract"
-                )
+            documents = [
+                item
+                for item in db_manager.list_order_documents(user_id, order_id)
+                if item["document_type"] in contract_types
+            ]
         except (db_manager.DatabaseError, json.JSONDecodeError):
             logging.exception("Could not store purchase contract for order %s", order_id)
             self._send_error_json(500, "database_error", self._t("request.database_write_error"))
@@ -532,7 +573,13 @@ class ApiHandler(BaseHTTPRequestHandler):
             logging.exception("Could not generate purchase contract for order %s", order_id)
             self._send_error_json(500, "contract_failed", self._t("order.contract_failed"))
             return
-        self._send_json({"document": document}, 201 if existing is None else 200)
+        self._send_json(
+            {
+                "documents": documents,
+                "document": documents[0] if documents else None,
+            },
+            201 if missing_types else 200,
+        )
 
     def _handle_download_order_document(self, user_id, order_id, document_type):
         try:
@@ -558,26 +605,193 @@ class ApiHandler(BaseHTTPRequestHandler):
             logging.exception("Could not read order %s for document upload", order_id)
             self._send_error_json(500, "database_error", self._t("request.database_read_error"))
             return
-        uploaded = self._read_uploaded_file()
-        if uploaded is None:
+        uploaded_files = self._read_uploaded_files()
+        if not uploaded_files:
             return
-        filename, content_type, content = uploaded
+        for filename, _content_type, _content in uploaded_files:
+            extension = Path(filename).suffix.lower()
+            if extension not in PDF_EXTENSIONS and extension not in IMAGE_MIME_TYPES:
+                self._send_error_json(
+                    415, "invalid_document_type", self._t("order.document.file_type")
+                )
+                return
+        documents = []
         try:
-            document = db_manager.create_order_document(
-                user_id,
-                order_id,
-                "related_documents",
-                filename,
-                content_type,
-                content,
-            )
+            for filename, content_type, content in uploaded_files:
+                documents.append(db_manager.create_order_related_document(
+                    user_id,
+                    order_id,
+                    filename,
+                    content_type,
+                    content,
+                    None,
+                ))
         except db_manager.DatabaseError:
             logging.exception("Could not save related document for order %s", order_id)
             self._send_error_json(
                 500, "database_error", self._t("request.database_write_error")
             )
             return
-        self._send_json({"document": document}, 201)
+        self._queue_pending_document_analysis(
+            user_id, order_id, documents, self._locale()
+        )
+        self._send_json({"documents": documents}, 201)
+
+    def _analyze_related_document(
+        self, user_id, order_id, document_id, filename, content, locale
+    ):
+        try:
+            extension = Path(filename).suffix.lower()
+            if extension in PDF_EXTENSIONS:
+                analysis = analyze_pdf_shipping_document(content, locale)
+            else:
+                analysis = analyze_image_shipping_document(
+                    filename, content, locale
+                )
+            db_manager.update_order_related_analysis(
+                document_id, user_id, order_id, analysis
+            )
+            if analysis.get("category") == "bill_of_lading":
+                db_manager.upsert_waybill(
+                    user_id,
+                    order_id,
+                    document_id,
+                    analysis.get("waybill") or analysis.get("fields", {}),
+                )
+        except (PdfAnalysisError, db_manager.DatabaseError, RuntimeError):
+            logging.exception(
+                "Could not analyze related document %s", document_id
+            )
+        finally:
+            with ANALYZING_RELATED_DOCUMENTS_LOCK:
+                ANALYZING_RELATED_DOCUMENTS.discard(document_id)
+
+    def _queue_pending_document_analysis(
+        self, user_id, order_id, documents, locale
+    ):
+        for document in documents:
+            if document.get("analysis_status") != "pending":
+                continue
+            document_id = document["id"]
+            with ANALYZING_RELATED_DOCUMENTS_LOCK:
+                if document_id in ANALYZING_RELATED_DOCUMENTS:
+                    continue
+                ANALYZING_RELATED_DOCUMENTS.add(document_id)
+            stored = db_manager.get_order_related_document_bytes(
+                user_id, order_id, document_id
+            )
+            if stored is None:
+                with ANALYZING_RELATED_DOCUMENTS_LOCK:
+                    ANALYZING_RELATED_DOCUMENTS.discard(document_id)
+                continue
+            filename, _content_type, content = stored
+            threading.Thread(
+                target=self._analyze_related_document,
+                args=(
+                    user_id,
+                    order_id,
+                    document_id,
+                    filename,
+                    content,
+                    locale,
+                ),
+                daemon=True,
+            ).start()
+
+    def _handle_save_related_document_review(
+        self, user_id, order_id, document_id
+    ):
+        fields = self._read_json()
+        if fields is None:
+            return
+        if fields.keys() != {"summary", "recognized_text"}:
+            self._send_error_json(
+                400, "invalid_fields", self._t("request.invalid_form_content")
+            )
+            return
+        try:
+            updated = db_manager.update_order_related_review(
+                document_id,
+                user_id,
+                order_id,
+                fields["summary"],
+                fields["recognized_text"],
+            )
+        except db_manager.DatabaseError:
+            logging.exception("Could not save document review %s", document_id)
+            self._send_error_json(
+                500, "database_error", self._t("request.database_write_error")
+            )
+            return
+        if not updated:
+            self._send_error_json(
+                404, "document_not_found", self._t("order.document_not_found")
+            )
+            return
+        self._send_json({"ok": True})
+
+    def _handle_update_waybill(self, user_id, order_id, document_id):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            waybill = db_manager.upsert_waybill(
+                user_id, order_id, document_id, fields
+            )
+        except ValueError:
+            self._send_error_json(
+                400, "invalid_waybill", self._t("waybill.invalid")
+            )
+            return
+        except db_manager.DatabaseError:
+            logging.exception("Could not save waybill for order %s", order_id)
+            self._send_error_json(
+                500, "database_error", self._t("request.database_write_error")
+            )
+            return
+        if waybill is None:
+            self._send_error_json(
+                404, "document_not_found", self._t("order.document_not_found")
+            )
+            return
+        self._send_json({"waybill": waybill})
+
+    def _handle_delete_related_document(self, user_id, order_id, document_id):
+        try:
+            deleted = db_manager.delete_order_related_document(
+                user_id, order_id, document_id
+            )
+        except db_manager.DatabaseError:
+            logging.exception("Could not delete related document %s", document_id)
+            self._send_error_json(
+                500, "database_error", self._t("request.delete_failed")
+            )
+            return
+        if not deleted:
+            self._send_error_json(
+                404, "document_not_found", self._t("order.document_not_found")
+            )
+            return
+        self._send_json({"ok": True})
+
+    def _handle_download_related_document(self, user_id, order_id, document_id):
+        try:
+            document = db_manager.get_order_related_document(
+                user_id, order_id, document_id
+            )
+        except db_manager.DatabaseError:
+            logging.exception("Could not read related document %s", document_id)
+            self._send_error_json(
+                500, "database_error", self._t("request.database_read_error")
+            )
+            return
+        if document is None:
+            self._send_error_json(
+                404, "document_not_found", self._t("order.document_not_found")
+            )
+            return
+        filename, content_type, content = document
+        self._send_file(content, content_type, filename)
 
     def _order_id(self, path):
         match = re.fullmatch(r"/api/orders/([1-9][0-9]{0,18})", path)
@@ -594,6 +808,16 @@ class ApiHandler(BaseHTTPRequestHandler):
         if match is None or int(match.group(1)) >= 2 ** 63:
             return None
         return int(match.group(1)), match.group(2), bool(match.group(3))
+
+    def _related_document_match(self, path):
+        match = re.fullmatch(
+            r"/api/orders/([1-9][0-9]{0,18})/related-documents/([1-9][0-9]*)"
+            r"(?:/content)?",
+            path,
+        )
+        if match is None:
+            return None
+        return int(match.group(1)), int(match.group(2)), path.endswith("/content")
 
     def _handle_market_history(self, asset):
         try:
@@ -614,7 +838,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         self._send_json(result)
 
-    def _read_uploaded_file(self):
+    def _read_uploaded_files(self):
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -639,23 +863,30 @@ class ApiHandler(BaseHTTPRequestHandler):
             f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1")
             + request_body
         )
-        uploaded_file = next(
-            (
-                part
-                for part in message.iter_parts()
-                if part.get_content_disposition() == "form-data"
-                and part.get_param("name", header="content-disposition") == "file"
-            ),
-            None,
-        )
-        if uploaded_file is None or not uploaded_file.get_filename():
+        uploaded_files = [
+            part
+            for part in message.iter_parts()
+            if part.get_content_disposition() == "form-data"
+            and part.get_param("name", header="content-disposition") == "file"
+            and part.get_filename()
+        ]
+        if not uploaded_files:
             self._send_error_json(400, "missing_file", self._t("upload.select_file"))
             return None
 
-        filename = Path(uploaded_file.get_filename()).name
-        file_bytes = uploaded_file.get_payload(decode=True) or b""
-        stored_content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        return filename, stored_content_type, file_bytes
+        return [
+            (
+                Path(uploaded_file.get_filename()).name,
+                mimetypes.guess_type(uploaded_file.get_filename())[0]
+                or "application/octet-stream",
+                uploaded_file.get_payload(decode=True) or b"",
+            )
+            for uploaded_file in uploaded_files
+        ]
+
+    def _read_uploaded_file(self):
+        uploaded_files = self._read_uploaded_files()
+        return uploaded_files[0] if uploaded_files else None
 
     def _handle_upload(self, user_id):
         uploaded = self._read_uploaded_file()
@@ -860,6 +1091,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             if user is not None:
                 self._handle_user_profile(user[0])
             return
+        related_document_match = self._related_document_match(parsed.path)
+        if related_document_match is not None:
+            user = self._require_user()
+            if user is not None:
+                order_id, document_id, download = related_document_match
+                if download:
+                    self._handle_download_related_document(
+                        user[0], order_id, document_id
+                    )
+                else:
+                    self._send_json({
+                        "documents": db_manager.list_order_related_documents(
+                            user[0], order_id
+                        )
+                    })
+            return
         documents_match = self._order_documents_match(parsed.path)
         if documents_match is not None:
             user = self._require_user()
@@ -1057,6 +1304,33 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         parsed = urlsplit(self.path)
+        waybill_match = re.fullmatch(
+            r"/api/orders/([1-9][0-9]{0,18})/related-documents/"
+            r"([1-9][0-9]*)/waybill",
+            parsed.path,
+        )
+        if waybill_match is not None:
+            user = self._require_user()
+            if user is not None:
+                self._handle_update_waybill(
+                    user[0], int(waybill_match.group(1)),
+                    int(waybill_match.group(2)),
+                )
+            return
+        related_document_match = self._related_document_match(parsed.path)
+        if related_document_match is not None:
+            order_id, document_id, download = related_document_match
+            if download:
+                self._send_error_json(
+                    404, "not_found", self._t("request.page_not_found")
+                )
+                return
+            user = self._require_user()
+            if user is not None:
+                self._handle_save_related_document_review(
+                    user[0], order_id, document_id
+                )
+            return
         if parsed.path == "/api/user-profile":
             user = self._require_user()
             if user is not None:
@@ -1087,6 +1361,20 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlsplit(self.path)
+        related_document_match = self._related_document_match(parsed.path)
+        if related_document_match is not None:
+            order_id, document_id, download = related_document_match
+            if download:
+                self._send_error_json(
+                    404, "not_found", self._t("request.page_not_found")
+                )
+                return
+            user = self._require_user()
+            if user is not None:
+                self._handle_delete_related_document(
+                    user[0], order_id, document_id
+                )
+            return
         order_id = self._order_id(parsed.path)
         if order_id is not None:
             user = self._require_user()

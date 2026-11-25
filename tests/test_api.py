@@ -17,7 +17,9 @@ import ai_analysis
 import api_server
 import db_manager
 import excel_analysis
+import image_analysis
 import order_manager
+import pdf_analysis
 import pandas as pd
 from openpyxl import Workbook
 from pypdf import PdfReader
@@ -547,7 +549,12 @@ class ApiIntegrationTests(unittest.TestCase):
         documents_path = f"/api/orders/{order_id}/documents"
         self.assertEqual(
             json.loads(self.request(documents_path).read()),
-            {"documents": []},
+            {
+                "documents": [],
+                "related_documents": [],
+                "waybills": [],
+                "has_intermediary": False,
+            },
         )
         generated = self.request(
             f"{documents_path}/purchase_contract", "POST"
@@ -572,19 +579,141 @@ class ApiIntegrationTests(unittest.TestCase):
             f"--{boundary}\r\n"
             'Content-Disposition: form-data; name="file"; filename="invoice.pdf"\r\n'
             "Content-Type: application/pdf\r\n\r\n"
-        ).encode() + b"%PDF related document" + f"\r\n--{boundary}--\r\n".encode()
-        related = self.request(
-            f"{documents_path}/related_documents",
-            "POST",
-            related_body,
-            {"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
+        ).encode() + b"%PDF related document" + (
+            f"\r\n--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="origin.png"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+        ).encode() + b"PNG related document" + f"\r\n--{boundary}--\r\n".encode()
+        related_analysis = {
+            "category": "bill_of_lading",
+            "category_label": "bill_of_lading",
+            "fields": {
+                "document_number": "BL-2026-001",
+                "BL_NUMBER": "BL-2026-001",
+                "BL_NET_WEIGHT": "100000",
+                "WEIGHT_UNIT": "KGS",
+                "DEPARTURE_DATE": "2026-11-01",
+                "ARRIVAL_DATE": "2026-12-01",
+                "PACK_NUMBER": "500",
+                "PACK_UNIT": "BALES",
+                "VOYAGE_NUMBER": "V001",
+                "COO_INOVICE_NUMBER": "INV-88",
+                "COO_INVOICE_DATE": "2026-10-28",
+            },
+            "text": "BILL OF LADING\nB/L No: BL-2026-001",
+            "waybill": {
+                "BL_NUMBER": "BL-2026-001",
+                "BL_NET_WEIGHT": "100000",
+                "WEIGHT_UNIT": "KGS",
+                "DEPARTURE_DATE": "2026-11-01",
+                "ARRIVAL_DATE": "2026-12-01",
+                "PACK_NUMBER": "500",
+                "PACK_UNIT": "BALES",
+                "VOYAGE_NUMBER": "V001",
+                "COO_INOVICE_NUMBER": "INV-88",
+                "COO_INVOICE_DATE": "2026-10-28",
+            },
+            "matched": True,
+            "source": "pdf",
+            "page_count": 1,
+        }
+        class ImmediateThread:
+            def __init__(self, target, args, daemon):
+                self.target = target
+                self.args = args
+            def start(self):
+                self.target(*self.args)
+
+        with patch.object(
+            api_server,
+            "analyze_pdf_shipping_document",
+            return_value=related_analysis,
+        ), patch.object(
+            api_server,
+            "analyze_image_shipping_document",
+            return_value=related_analysis,
+        ), patch.object(api_server.threading, "Thread", ImmediateThread):
+            related = self.request(
+                f"{documents_path}/related_documents",
+                "POST",
+                related_body,
+                {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
         self.assertEqual(related.code, 201)
+        uploaded_documents = json.loads(related.read())["documents"]
+        self.assertEqual(len(uploaded_documents), 2)
+        related_document = next(
+            item for item in uploaded_documents
+            if item["filename"] == "invoice.pdf"
+        )
+        self.assertEqual(related_document["filename"], "invoice.pdf")
+        related_document = next(
+            item
+            for item in json.loads(
+                self.request(documents_path).read()
+            )["related_documents"]
+            if item["filename"] == "invoice.pdf"
+        )
+        self.assertEqual(related_document["category"], "bill_of_lading")
         self.assertEqual(
-            json.loads(related.read())["document"]["filename"], "invoice.pdf"
+            related_document["analysis"]["fields"]["document_number"],
+            "BL-2026-001",
+        )
+        waybill = next(
+            item
+            for item in json.loads(
+                self.request(documents_path).read()
+            )["waybills"]
+            if item["related_document_id"] == related_document["id"]
+        )
+        self.assertEqual(waybill["BL_NET_WEIGHT"], "100000")
+        changed_waybill = {**related_analysis["waybill"], "VOYAGE_NUMBER": "V002"}
+        self.assertEqual(
+            self.request(
+                f"/api/orders/{order_id}/related-documents/"
+                f"{related_document['id']}/waybill",
+                "PATCH",
+                json.dumps(changed_waybill).encode(),
+                headers,
+            ).code,
+            200,
+        )
+        self.assertEqual(
+            self.request(
+                f"/api/orders/{order_id}/related-documents/{related_document['id']}",
+                "PATCH",
+                json.dumps({
+                    "summary": "提单核验完成",
+                    "recognized_text": "edited OCR content",
+                }).encode(),
+                headers,
+            ).code,
+            200,
+        )
+        reviewed = next(
+            item
+            for item in json.loads(
+                self.request(f"/api/orders/{order_id}/documents").read()
+            )["related_documents"]
+            if item["id"] == related_document["id"]
+        )
+        self.assertEqual(reviewed["summary"], "提单核验完成")
+        self.assertEqual(reviewed["recognized_text"], "edited OCR content")
+        origin_document = next(
+            item for item in uploaded_documents
+            if item["filename"] == "origin.png"
+        )
+        self.assertEqual(
+            self.request(
+                f"/api/orders/{order_id}/related-documents/"
+                f"{origin_document['id']}",
+                "DELETE",
+            ).code,
+            200,
         )
         downloaded_related = self.request(
-            f"{documents_path}/related_documents/content"
+            f"/api/orders/{order_id}/related-documents/"
+            f"{related_document['id']}/content"
         )
         self.assertEqual(downloaded_related.read(), b"%PDF related document")
         with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
@@ -594,7 +723,15 @@ class ApiIntegrationTests(unittest.TestCase):
                     "WHERE order_id = ?",
                     (order_id,),
                 ).fetchone()[:1],
-                (2,),
+                (1,),
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM order_related_documents "
+                    "WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()[0],
+                1,
             )
         contract = self.request(
             f"{documents_path}/purchase_contract/content"
@@ -680,9 +817,22 @@ class ApiIntegrationTests(unittest.TestCase):
             [manual_id, order_id],
         )
         self.assertEqual(json.loads(self.request(f"/api/orders/{order_id}").read())["order"]["id"], order_id)
+        intermediary = self.request(
+            "/api/suppliers",
+            "POST",
+            body({
+                "short_name": "Broker",
+                "company_name": "Cotton Intermediary Ltd.",
+                "company_address": "Khartoum, Sudan",
+                "bank_account": "Broker account",
+            }),
+            headers,
+        )
+        intermediary_id = str(json.loads(intermediary.read())["supplier"]["id"])
         edited = {
             **update_fields, "quotation_batch_number": "snapshot-edited",
             "quotation_quotation_date": "2026-11-25", "delivery_date": "2026-12-20",
+            "intermediary_id": intermediary_id,
             "pricing_supplier_quote_usd_per_ton": "1200",
             "pricing_quantity_tons": "125",
         }
@@ -696,8 +846,42 @@ class ApiIntegrationTests(unittest.TestCase):
         )["documents"]
         self.assertEqual(
             [item["document_type"] for item in remaining_documents],
-            ["related_documents"],
+            [],
         )
+        related_documents = json.loads(
+            self.request(f"/api/orders/{order_id}/documents").read()
+        )["related_documents"]
+        self.assertEqual(len(related_documents), 1)
+        linked_generation = self.request(
+            f"{documents_path}/purchase_contract", "POST"
+        )
+        self.assertEqual(linked_generation.code, 201)
+        linked_documents = json.loads(linked_generation.read())["documents"]
+        self.assertEqual(
+            {item["document_type"] for item in linked_documents},
+            {
+                "supplier_intermediary_contract",
+                "intermediary_user_contract",
+            },
+        )
+        linked_pdf = self.request(
+            f"{documents_path}/supplier_intermediary_contract/content"
+        ).read()
+        linked_text = "".join(
+            page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(linked_pdf)).pages
+        )
+        self.assertIn("Test Cotton Export Company", linked_text)
+        self.assertIn("Cotton Intermediary Ltd.", linked_text)
+        buyer_pdf = self.request(
+            f"{documents_path}/intermediary_user_contract/content"
+        ).read()
+        buyer_text = "".join(
+            page.extract_text() or ""
+            for page in PdfReader(io.BytesIO(buyer_pdf)).pages
+        )
+        self.assertIn("Cotton Intermediary Ltd.", buyer_text)
+        self.assertIn("Buyer Company Ltd.", buyer_text)
         original_quote = next(q for q in json.loads(self.request("/api/cotton-quotations").read())["sheets"]["quotation_summary"] if q["row_number"] == int(fields["quotation_id"]))
         self.assertEqual(original_quote["batch_number"], "original")
         self.assertEqual(original_quote["quotation_date"], "2026-11-23")
@@ -764,6 +948,14 @@ class ApiIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM order_documents WHERE order_id = ?",
+                    (order_id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM order_related_documents "
+                    "WHERE order_id = ?",
                     (order_id,),
                 ).fetchone()[0],
                 0,
@@ -969,6 +1161,70 @@ class ApiIntegrationTests(unittest.TestCase):
             ).code,
             200,
         )
+
+    def test_pdf_shipping_document_classification(self):
+        analysis = pdf_analysis.analyze_shipping_document_text(
+            """BILL OF LADING
+B/L No.: BL2026-001
+Vessel: MV COTTON STAR
+Port of Loading: Port Sudan
+Port of Discharge: Qingdao
+Consignee: Buyer Company Ltd.
+"""
+        )
+        self.assertEqual(analysis["category"], "bill_of_lading")
+        self.assertTrue(analysis["matched"])
+        self.assertEqual(analysis["fields"]["document_number"], "BL2026-001")
+        self.assertEqual(analysis["fields"]["port_of_loading"], "Port Sudan")
+        waybill_text = pdf_analysis.analyze_shipping_document_text(
+            """BILL OF LADING
+B/L No: BL-2026-777
+Net Weight: 98500 KGS
+Departure Date: 2026-11-02
+Arrival Date: 2026-12-03
+No. of Packages: 480 BALES
+Voyage No: V777
+Invoice No: INV-77
+Invoice Date: 2026-10-20
+"""
+        )
+        self.assertEqual(waybill_text["waybill"]["BL_NUMBER"], "BL-2026-777")
+        self.assertEqual(waybill_text["waybill"]["BL_NET_WEIGHT"], "98500")
+        self.assertEqual(waybill_text["waybill"]["PACK_UNIT"], "BALES")
+
+    def test_image_only_pdf_uses_paddle_ocr(self):
+        pdf_bytes = b"%PDF-image-only"
+        with patch.object(
+            pdf_analysis,
+            "extract_pdf_text",
+            return_value=(2, ""),
+        ), patch.object(
+            image_analysis,
+            "extract_document_ocr_text",
+            return_value=(
+                "PHYTOSANITARY CERTIFICATE\n"
+                "Certificate No: PSC-2026-11"
+            ),
+        ):
+            analysis = pdf_analysis.analyze_pdf_shipping_document(pdf_bytes)
+        self.assertEqual(analysis["category"], "phytosanitary_certificate")
+        self.assertEqual(analysis["text_source"], "ocr")
+
+    def test_image_shipping_document_classification(self):
+        text = (
+            "CERTIFICATE OF ORIGIN\n"
+            "Certificate No.: COO-2026-88\n"
+            "Country of Origin: Sudan"
+        )
+        with patch.object(
+            image_analysis, "extract_document_ocr_text", return_value=text
+        ):
+            analysis = image_analysis.analyze_image_shipping_document(
+                "origin.png", b"png-content", "en"
+            )
+        self.assertEqual(analysis["category"], "certificate_of_origin")
+        self.assertEqual(analysis["fields"]["document_number"], "COO-2026-88")
+        self.assertEqual(analysis["fields"]["country_of_origin"], "Sudan")
 
     def upload(self, filename, content, content_type):
         boundary = "----test-boundary"

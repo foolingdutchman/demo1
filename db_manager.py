@@ -79,6 +79,8 @@ def initialize_database():
         initialize_orders(connection)
         initialize_order_documents(connection)
         initialize_suppliers(connection)
+        initialize_order_related_documents(connection)
+        initialize_waybills(connection)
 
 
 def initialize_orders(connection):
@@ -110,6 +112,8 @@ def initialize_orders(connection):
         connection.execute("ALTER TABLE orders ADD COLUMN delivery_date TEXT")
     if "supplier_id" not in columns:
         connection.execute("ALTER TABLE orders ADD COLUMN supplier_id INTEGER")
+    if "intermediary_id" not in columns:
+        connection.execute("ALTER TABLE orders ADD COLUMN intermediary_id INTEGER")
 
 
 def initialize_suppliers(connection):
@@ -139,6 +143,71 @@ def initialize_order_documents(connection):
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             content BLOB NOT NULL,
             UNIQUE(order_id, document_type)
+        )"""
+    )
+
+
+def initialize_order_related_documents(connection):
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS order_related_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            category TEXT,
+            analysis_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            content BLOB NOT NULL
+        )"""
+    )
+    columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(order_related_documents)"
+        )
+    }
+    for column, definition in {
+        "analysis_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "summary": "TEXT",
+        "recognized_text": "TEXT",
+    }.items():
+        if column not in columns:
+            connection.execute(
+                f"ALTER TABLE order_related_documents ADD COLUMN {column} {definition}"
+            )
+    connection.execute(
+        """INSERT INTO order_related_documents
+           (order_id, user_id, filename, content_type, size_bytes, category,
+            analysis_json, analysis_status, recognized_text, content, created_at)
+           SELECT order_id, user_id, filename, content_type, size_bytes,
+                  NULL, NULL, 'pending', NULL, content, created_at
+           FROM order_documents
+           WHERE document_type = 'related_documents'"""
+    )
+    connection.execute(
+        "DELETE FROM order_documents WHERE document_type = 'related_documents'"
+    )
+
+
+def initialize_waybills(connection):
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS waybills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            related_document_id INTEGER NOT NULL UNIQUE,
+            BL_NUMBER TEXT,
+            BL_NET_WEIGHT TEXT,
+            WEIGHT_UNIT TEXT,
+            DEPARTURE_DATE TEXT,
+            ARRIVAL_DATE TEXT,
+            PACK_NUMBER TEXT,
+            PACK_UNIT TEXT,
+            VOYAGE_NUMBER TEXT,
+            COO_INOVICE_NUMBER TEXT,
+            COO_INVOICE_DATE TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
     )
 
@@ -519,16 +588,18 @@ def list_orders(user_id, order_id=None):
         *(column for column, _header, _kind in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]),
         "quotation_date", "delivery_date", "source_filename", "source_sheet_name", "benchmark_source",
         "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
-        "supplier_id", "pricing_inputs", "pricing_result",
+        "supplier_id", "intermediary_id", "pricing_inputs", "pricing_result",
     )
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         where = "user_id = ?" if order_id is None else "user_id = ? AND id = ?"
         params = (user_id,) if order_id is None else (user_id, order_id)
         rows = connection.execute(
             f"""SELECT {', '.join(f'o.{column}' for column in columns)},
-                       s.short_name, s.company_name, s.company_address, s.bank_account
+                       s.short_name, s.company_name, s.company_address, s.bank_account,
+                       i.short_name, i.company_name, i.company_address, i.bank_account
                 FROM orders AS o
                 LEFT JOIN suppliers AS s ON s.id = o.supplier_id
+                LEFT JOIN suppliers AS i ON i.id = o.intermediary_id
                 WHERE {'o.user_id = ?' if order_id is None else 'o.user_id = ? AND o.id = ?'}
                 ORDER BY o.id DESC""",
             params,
@@ -542,6 +613,10 @@ def list_orders(user_id, order_id=None):
                 "supplier_company_name",
                 "supplier_address",
                 "supplier_bank_account",
+                "intermediary_short_name",
+                "intermediary_company_name",
+                "intermediary_address",
+                "intermediary_bank_account",
             ),
             row,
         ))
@@ -567,6 +642,266 @@ def list_order_documents(user_id, order_id):
         ))
         for row in rows
     ]
+
+
+def list_order_related_documents(user_id, order_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        rows = connection.execute(
+            """SELECT id, filename, content_type, size_bytes, category,
+                      analysis_json, analysis_status, summary, recognized_text,
+                      created_at
+               FROM order_related_documents
+               WHERE user_id = ? AND order_id = ?
+               ORDER BY id DESC""",
+            (user_id, order_id),
+        ).fetchall()
+    documents = []
+    for row in rows:
+        document = dict(zip(
+            (
+                "id",
+                "filename",
+                "content_type",
+                "size_bytes",
+                "category",
+                "analysis_json",
+                "analysis_status",
+                "summary",
+                "recognized_text",
+                "created_at",
+            ),
+            row,
+        ))
+        try:
+            document["analysis"] = (
+                json.loads(document.pop("analysis_json"))
+                if document["analysis_json"]
+                else None
+            )
+        except json.JSONDecodeError:
+            document["analysis"] = None
+            document.pop("analysis_json", None)
+        documents.append(document)
+    return documents
+
+
+WAYBILL_FIELDS = (
+    "BL_NUMBER",
+    "BL_NET_WEIGHT",
+    "WEIGHT_UNIT",
+    "DEPARTURE_DATE",
+    "ARRIVAL_DATE",
+    "PACK_NUMBER",
+    "PACK_UNIT",
+    "VOYAGE_NUMBER",
+    "COO_INOVICE_NUMBER",
+    "COO_INVOICE_DATE",
+)
+
+
+def upsert_waybill(user_id, order_id, related_document_id, fields):
+    if fields.keys() - set(WAYBILL_FIELDS):
+        raise ValueError("Invalid waybill fields")
+    values = {field: str(fields.get(field) or "").strip() for field in WAYBILL_FIELDS}
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        owned = connection.execute(
+            """SELECT 1 FROM order_related_documents
+               WHERE id = ? AND order_id = ? AND user_id = ?""",
+            (related_document_id, order_id, user_id),
+        ).fetchone()
+        if owned is None:
+            return None
+        existing = connection.execute(
+            "SELECT id FROM waybills WHERE related_document_id = ?",
+            (related_document_id,),
+        ).fetchone()
+        if existing:
+            connection.execute(
+                f"""UPDATE waybills
+                    SET {', '.join(f'{field} = ?' for field in WAYBILL_FIELDS)},
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?""",
+                (*(values[field] for field in WAYBILL_FIELDS), existing[0]),
+            )
+            waybill_id = existing[0]
+        else:
+            cursor = connection.execute(
+                f"""INSERT INTO waybills
+                    (order_id, related_document_id, {', '.join(WAYBILL_FIELDS)})
+                    VALUES (?, ?, {', '.join('?' for _ in WAYBILL_FIELDS)})""",
+                (
+                    order_id,
+                    related_document_id,
+                    *(values[field] for field in WAYBILL_FIELDS),
+                ),
+            )
+            waybill_id = cursor.lastrowid
+        return get_waybill(connection, waybill_id)
+
+
+def get_waybill(connection, waybill_id):
+    row = connection.execute(
+        f"""SELECT id, related_document_id, {', '.join(WAYBILL_FIELDS)},
+                   created_at, updated_at
+           FROM waybills WHERE id = ?""",
+        (waybill_id,),
+    ).fetchone()
+    return dict(zip(
+        (
+            "id",
+            "related_document_id",
+            *WAYBILL_FIELDS,
+            "created_at",
+            "updated_at",
+        ),
+        row,
+    )) if row else None
+
+
+def list_waybills(user_id, order_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        rows = connection.execute(
+            f"""SELECT w.id, w.related_document_id,
+                       {', '.join(f'w.{field}' for field in WAYBILL_FIELDS)},
+                       w.created_at, w.updated_at
+                FROM waybills AS w
+                JOIN order_related_documents AS d
+                  ON d.id = w.related_document_id
+                WHERE w.order_id = ? AND d.user_id = ?
+                ORDER BY w.id DESC""",
+            (order_id, user_id),
+        ).fetchall()
+    return [
+        dict(zip(
+            (
+                "id",
+                "related_document_id",
+                *WAYBILL_FIELDS,
+                "created_at",
+                "updated_at",
+            ),
+            row,
+        ))
+        for row in rows
+    ]
+
+
+def create_order_related_document(
+    user_id, order_id, filename, content_type, content, analysis=None
+):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            """INSERT INTO order_related_documents
+               (order_id, user_id, filename, content_type, size_bytes,
+                category, analysis_json, analysis_status, recognized_text, content)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                order_id,
+                user_id,
+                filename,
+                content_type,
+                len(content),
+                analysis.get("category") if analysis else None,
+                json.dumps(analysis, ensure_ascii=False, allow_nan=False)
+                if analysis else None,
+                "complete" if analysis else "pending",
+                analysis.get("text") if analysis else None,
+                sqlite3.Binary(content),
+            ),
+        )
+        document_id = cursor.lastrowid
+        row = connection.execute(
+            """SELECT id, filename, content_type, size_bytes, category,
+                      analysis_json, analysis_status, summary, recognized_text,
+                      created_at
+               FROM order_related_documents
+               WHERE id = ? AND user_id = ? AND order_id = ?""",
+            (document_id, user_id, order_id),
+        ).fetchone()
+    document = dict(zip(
+        (
+            "id",
+            "filename",
+            "content_type",
+            "size_bytes",
+            "category",
+            "analysis_json",
+            "analysis_status",
+            "summary",
+            "recognized_text",
+            "created_at",
+        ),
+        row,
+    ))
+    raw_analysis = document.pop("analysis_json")
+    document["analysis"] = json.loads(raw_analysis) if raw_analysis else None
+    return document
+
+
+def update_order_related_analysis(document_id, user_id, order_id, analysis):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            """UPDATE order_related_documents
+               SET category = ?, analysis_json = ?, analysis_status = 'complete',
+                   recognized_text = COALESCE(recognized_text, ?)
+               WHERE id = ? AND user_id = ? AND order_id = ?""",
+            (
+                analysis.get("category"),
+                json.dumps(analysis, ensure_ascii=False, allow_nan=False),
+                analysis.get("text"),
+                document_id,
+                user_id,
+                order_id,
+            ),
+        )
+        return cursor.rowcount
+
+
+def update_order_related_review(
+    document_id, user_id, order_id, summary, recognized_text
+):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        cursor = connection.execute(
+            """UPDATE order_related_documents
+               SET summary = ?, recognized_text = ?
+               WHERE id = ? AND user_id = ? AND order_id = ?""",
+            (summary, recognized_text, document_id, user_id, order_id),
+        )
+        return cursor.rowcount
+
+
+def delete_order_related_document(user_id, order_id, document_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        connection.execute(
+            "DELETE FROM waybills WHERE related_document_id = ? AND order_id = ?",
+            (document_id, order_id),
+        )
+        cursor = connection.execute(
+            """DELETE FROM order_related_documents
+               WHERE id = ? AND user_id = ? AND order_id = ?""",
+            (document_id, user_id, order_id),
+        )
+        return cursor.rowcount
+
+
+def get_order_related_document_bytes(user_id, order_id, document_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        return connection.execute(
+            """SELECT filename, content_type, content
+               FROM order_related_documents
+               WHERE id = ? AND user_id = ? AND order_id = ?""",
+            (document_id, user_id, order_id),
+        ).fetchone()
+
+
+def get_order_related_document(user_id, order_id, document_id):
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        return connection.execute(
+            """SELECT filename, content_type, content
+               FROM order_related_documents
+               WHERE id = ? AND user_id = ? AND order_id = ?""",
+            (document_id, user_id, order_id),
+        ).fetchone()
 
 
 def get_order_document(user_id, order_id, document_type):
@@ -610,8 +945,45 @@ def create_order_document(
     ))
 
 
-def create_order(user_id, supplier_id, quotation_id, quotation, benchmark_source, delivery_date,
-                 pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis):
+def create_order_documents(user_id, order_id, documents):
+    stored = []
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for document_type, filename, content_type, content in documents:
+            connection.execute(
+                """INSERT OR IGNORE INTO order_documents
+                   (user_id, order_id, document_type, filename, content_type,
+                    size_bytes, content)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id,
+                    order_id,
+                    document_type,
+                    filename,
+                    content_type,
+                    len(content),
+                    content,
+                ),
+            )
+        rows = connection.execute(
+            """SELECT id, document_type, filename, content_type, size_bytes, created_at
+               FROM order_documents
+               WHERE user_id = ? AND order_id = ?""",
+            (user_id, order_id),
+        ).fetchall()
+        stored = [
+            dict(zip(
+                ("id", "document_type", "filename", "content_type", "size_bytes", "created_at"),
+                row,
+            ))
+            for row in rows
+        ]
+    return stored
+
+
+def create_order(user_id, supplier_id, intermediary_id, quotation_id, quotation,
+                 benchmark_source, delivery_date, pricing_inputs, pricing_result,
+                 quantity_tons, supplier_price, quote_basis):
     allowed = {
         column for column, _header, _kind
         in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
@@ -620,11 +992,14 @@ def create_order(user_id, supplier_id, quotation_id, quotation, benchmark_source
         raise ValueError("Invalid order quotation fields")
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
-        if supplier_id is not None and not connection.execute(
-            "SELECT 1 FROM suppliers WHERE id = ? AND user_id = ?",
-            (supplier_id, user_id),
-        ).fetchone():
-            raise ValueError("Supplier not found")
+        for party_id in (supplier_id, intermediary_id):
+            if party_id is not None and not connection.execute(
+                "SELECT 1 FROM suppliers WHERE id = ? AND user_id = ?",
+                (party_id, user_id),
+            ).fetchone():
+                raise ValueError("Supplier not found")
+        if supplier_id == intermediary_id:
+            raise ValueError("Supplier and intermediary must differ")
         if quotation_id is not None:
             quote_columns = tuple(quotation)
             row = connection.execute(
@@ -659,7 +1034,7 @@ def create_order(user_id, supplier_id, quotation_id, quotation, benchmark_source
             quotation_id = cursor.lastrowid
         columns = (
             "user_id", "source_quotation_id", *quotation.keys(), "benchmark_source", "delivery_date",
-            "supplier_id", "pricing_inputs", "pricing_result", "quantity_tons",
+            "supplier_id", "intermediary_id", "pricing_inputs", "pricing_result", "quantity_tons",
             "supplier_price_usd_per_ton", "supplier_quote_basis",
         )
         cursor = connection.execute(
@@ -667,24 +1042,25 @@ def create_order(user_id, supplier_id, quotation_id, quotation, benchmark_source
             f"VALUES ({', '.join('?' for _ in columns)})",
             (
                 user_id, quotation_id, *quotation.values(), benchmark_source, delivery_date,
-                supplier_id, pricing_inputs, pricing_result, quantity_tons, supplier_price,
-                quote_basis,
+                supplier_id, intermediary_id, pricing_inputs, pricing_result, quantity_tons,
+                supplier_price, quote_basis,
             ),
         )
         return cursor.lastrowid
 
 
-def update_order(user_id, order_id, supplier_id, quotation, benchmark_source, delivery_date,
-                 pricing_inputs, pricing_result, quantity_tons, supplier_price, quote_basis):
+def update_order(user_id, order_id, supplier_id, intermediary_id, quotation,
+                 benchmark_source, delivery_date, pricing_inputs, pricing_result,
+                 quantity_tons, supplier_price, quote_basis):
     columns = (
-        *quotation.keys(), "benchmark_source", "delivery_date", "supplier_id", "pricing_inputs",
+        *quotation.keys(), "benchmark_source", "delivery_date", "supplier_id", "intermediary_id", "pricing_inputs",
         "pricing_result", "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
     )
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         cursor = connection.execute(
             f"UPDATE orders SET {', '.join(f'{column} = ?' for column in columns)} "
             "WHERE id = ? AND user_id = ?",
-            (*quotation.values(), benchmark_source, delivery_date, supplier_id, pricing_inputs,
+            (*quotation.values(), benchmark_source, delivery_date, supplier_id, intermediary_id, pricing_inputs,
              pricing_result, quantity_tons, supplier_price, quote_basis, order_id, user_id),
         )
         purchase_contract_deleted = 0
@@ -692,7 +1068,11 @@ def update_order(user_id, order_id, supplier_id, quotation, benchmark_source, de
             deletion = connection.execute(
                 """DELETE FROM order_documents
                    WHERE order_id = ? AND user_id = ?
-                     AND document_type = 'purchase_contract'""",
+                     AND document_type IN (
+                        'purchase_contract',
+                        'supplier_intermediary_contract',
+                        'intermediary_user_contract'
+                     )""",
                 (order_id, user_id),
             )
             purchase_contract_deleted = deletion.rowcount
@@ -711,6 +1091,15 @@ def delete_order(user_id, order_id):
             connection.execute(
                 "DELETE FROM order_documents WHERE order_id = ? AND user_id = ?",
                 (order_id, user_id),
+            )
+            connection.execute(
+                "DELETE FROM order_related_documents "
+                "WHERE order_id = ? AND user_id = ?",
+                (order_id, user_id),
+            )
+            connection.execute(
+                "DELETE FROM waybills WHERE order_id = ?",
+                (order_id,),
             )
         return cursor.rowcount
 
