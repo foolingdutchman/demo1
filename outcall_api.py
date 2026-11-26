@@ -193,6 +193,49 @@ def parse_cc_index_prices(page_html):
     return quotes
 
 
+def get_cc_index_prices():
+    fetched_date = datetime.now().date().isoformat()
+    quotes = {}
+    missing = []
+    for asset in CC_INDEX_ASSETS.values():
+        try:
+            quote = db_manager.get_daily_product_price(asset, fetched_date)
+        except db_manager.DatabaseError as error:
+            logging.warning(
+                "Could not read %s daily price cache: %s",
+                asset,
+                type(error).__name__,
+            )
+            quote = None
+        if quote is None:
+            missing.append(asset)
+        else:
+            quotes[asset] = quote
+    if not missing:
+        return quotes
+
+    fetched = parse_cc_index_prices(
+        fetch_public_html(CC_INDEX_PRICES_URL, encoding="gbk")
+    )
+    for asset, quote in fetched.items():
+        quotes[asset] = quote
+        try:
+            db_manager.save_daily_product_price(
+                asset,
+                fetched_date,
+                quote["date"],
+                quote["price"],
+                "CNY",
+            )
+        except db_manager.DatabaseError as error:
+            logging.warning(
+                "Could not save %s daily price cache: %s",
+                asset,
+                type(error).__name__,
+            )
+    return quotes
+
+
 def parse_sesame_price(page_html, today=None):
     text = html.unescape(page_html)
     match = re.search(
@@ -305,17 +348,55 @@ def get_cached_product_price(product, fetcher):
 
 
 def get_market_prices():
+    prices = {}
+    primary_failures = 0
     try:
         gold = fetch_public_json(GOLD_PRICE_API_URL)
+        prices["gold"] = float(gold["price"])
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        primary_failures += 1
+        logging.warning("Could not retrieve gold price: %s", type(error).__name__)
+    try:
         crypto = fetch_public_json(CRYPTO_PRICES_API_URL)
+        prices["btc"] = float(crypto["bitcoin"]["usd"])
+        prices["eth"] = float(crypto["ethereum"]["usd"])
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        primary_failures += 1
+        logging.warning("Could not retrieve crypto prices: %s", type(error).__name__)
+    try:
         ice_cotton = fetch_public_json(ICE_COTTON_PRICE_API_URL)
+        prices["ice_cotton"] = float(
+            ice_cotton["chart"]["result"][0]["meta"]["regularMarketPrice"]
+        )
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        primary_failures += 1
+        logging.warning("Could not retrieve ICE cotton price: %s", type(error).__name__)
+    try:
         zce_cotton = fetch_public_text(ZCE_COTTON_PRICE_API_URL)
+        cotton_quote = re.search(r'hq_str_nf_CF0="([^"]*)"', zce_cotton)
+        if cotton_quote is None:
+            raise ValueError("Public market API returned an invalid cotton quote")
+        cotton_fields = cotton_quote.group(1).split(",")
+        if len(cotton_fields) <= 6 or cotton_fields[0] != "棉花连续":
+            raise ValueError("Public market API returned an invalid cotton quote")
+        prices["zce_cotton"] = float(cotton_fields[6])
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        primary_failures += 1
+        logging.warning("Could not retrieve ZCE cotton price: %s", type(error).__name__)
+    try:
         boc_rates = fetch_public_html(BOC_EXCHANGE_RATES_API_URL)
+        rate_parser = BankOfChinaRateParser()
+        rate_parser.feed(boc_rates)
+        if rate_parser.usd_cells is None or len(rate_parser.usd_cells) <= 3:
+            raise ValueError("Bank of China USD exchange rate was not found")
+        prices["usd_cny"] = round(float(rate_parser.usd_cells[3]) / 100, 4)
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        primary_failures += 1
+        logging.warning("Could not retrieve USD/CNY rate: %s", type(error).__name__)
+    try:
         cc_index_quotes = {}
         try:
-            cc_index_quotes = parse_cc_index_prices(
-                fetch_public_html(CC_INDEX_PRICES_URL, encoding="gbk")
-            )
+            cc_index_quotes = get_cc_index_prices()
         except (
             URLError,
             TimeoutError,
@@ -369,27 +450,6 @@ def get_market_prices():
                 "Could not retrieve peanut meal price: %s",
                 type(error).__name__,
             )
-        ice_result = ice_cotton["chart"]["result"][0]
-        ice_price = float(ice_result["meta"]["regularMarketPrice"])
-        cotton_quote = re.search(r'hq_str_nf_CF0="([^"]*)"', zce_cotton)
-        if cotton_quote is None:
-            raise ValueError("Public market API returned an invalid cotton quote")
-        cotton_fields = cotton_quote.group(1).split(",")
-        if len(cotton_fields) <= 6 or cotton_fields[0] != "棉花连续":
-            raise ValueError("Public market API returned an invalid cotton quote")
-        rate_parser = BankOfChinaRateParser()
-        rate_parser.feed(boc_rates)
-        if rate_parser.usd_cells is None or len(rate_parser.usd_cells) <= 3:
-            raise ValueError("Bank of China USD exchange rate was not found")
-        usd_cny_spot_sell = round(float(rate_parser.usd_cells[3]) / 100, 4)
-        prices = {
-            "gold": float(gold["price"]),
-            "btc": float(crypto["bitcoin"]["usd"]),
-            "eth": float(crypto["ethereum"]["usd"]),
-            "ice_cotton": ice_price,
-            "zce_cotton": float(cotton_fields[6]),
-            "usd_cny": usd_cny_spot_sell,
-        }
         asset_dates = {}
         for asset, quote in cc_index_quotes.items():
             prices[asset] = quote["price"]
@@ -403,22 +463,26 @@ def get_market_prices():
         if peanut_meal_quote is not None:
             prices["peanut_meal"] = peanut_meal_quote["price"]
             asset_dates["peanut_meal"] = peanut_meal_quote["date"]
+        if primary_failures == 5 and len(prices) == 0:
+            raise MarketDataUnavailable
         if any(not math.isfinite(price) or price <= 0 for price in prices.values()):
             raise ValueError("Public market API returned an invalid price")
-        import_cotton_price = round(
-            (prices["zce_cotton"] - COTTON_CUSTOMS_COST_CNY)
-            / IMPORT_VAT_FACTOR
-            / prices["usd_cny"]
-            / US_CENTS_PER_METRIC_TON_CONVERSION
-            - COTTON_TARIFF_AMOUNT_CNY
-            / prices["usd_cny"]
-            / US_CENTS_PER_METRIC_TON_CONVERSION
-            - COTTON_CLEARANCE_COST_US_CENTS,
-            2,
-        )
-        if not math.isfinite(import_cotton_price) or import_cotton_price <= 0:
-            raise ValueError("Calculated import cotton price is invalid")
-    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        import_cotton_price = None
+        if "zce_cotton" in prices and "usd_cny" in prices:
+            candidate = round(
+                (prices["zce_cotton"] - COTTON_CUSTOMS_COST_CNY)
+                / IMPORT_VAT_FACTOR
+                / prices["usd_cny"]
+                / US_CENTS_PER_METRIC_TON_CONVERSION
+                - COTTON_TARIFF_AMOUNT_CNY
+                / prices["usd_cny"]
+                / US_CENTS_PER_METRIC_TON_CONVERSION
+                - COTTON_CLEARANCE_COST_US_CENTS,
+                2,
+            )
+            if math.isfinite(candidate) and candidate > 0:
+                import_cotton_price = candidate
+    except (ValueError, KeyError, TypeError) as error:
         logging.exception("Could not retrieve public market prices")
         raise MarketDataUnavailable from error
 
@@ -437,7 +501,9 @@ def get_market_prices():
         },
         "asset_dates": asset_dates,
         "prices": prices,
-        "derived_prices": {"import_cotton": import_cotton_price},
+        "derived_prices": {
+            "import_cotton": import_cotton_price,
+        },
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 

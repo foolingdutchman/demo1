@@ -837,6 +837,18 @@ class ApiIntegrationTests(unittest.TestCase):
             [manual_id, order_id],
         )
         self.assertEqual(json.loads(self.request(f"/api/orders/{order_id}").read())["order"]["id"], order_id)
+        unchanged_fields = dict(update_fields)
+        unchanged_fields.pop("supplier_id", None)
+        unchanged_fields.pop("intermediary_id", None)
+        self.assertEqual(
+            self.request(
+                f"/api/orders/{order_id}",
+                "PATCH",
+                body(unchanged_fields),
+                headers,
+            ).code,
+            200,
+        )
         intermediary = self.request(
             "/api/suppliers",
             "POST",
@@ -1438,10 +1450,47 @@ Invoice Date: 2026-10-20
             14118.0,
         )
 
+    def test_cc_index_tables_cache_all_quotes_with_one_page_request(self):
+        page_html = (
+            "<div class='nd_cotton_block'><div class='nd_block_t'>"
+            "CC Index 3128B</div><div class='nd_block_d'>2026-11-26"
+            "</div><div class='nd_block_p'><span>16881</span> 元/吨"
+            "</div></div>"
+            "<div class='nd_cotton_block'><div class='nd_block_t'>"
+            "CC Index 2227B</div><div class='nd_block_d'>2026-11-26"
+            "</div><div class='nd_block_p'><span>15360</span> 元/吨"
+            "</div></div>"
+            "<div class='nd_cotton_block mgr0'><div class='nd_block_t'>"
+            "CC Index 2129B</div><div class='nd_block_d'>2026-11-26"
+            "</div><div class='nd_block_p'><span>17189</span> 元/吨"
+            "</div></div>"
+        )
+        with patch.object(
+            api_server.outcall_api,
+            "fetch_public_html",
+            return_value=page_html,
+        ) as fetch:
+            first = api_server.outcall_api.get_cc_index_prices()
+            second = api_server.outcall_api.get_cc_index_prices()
+        self.assertEqual(set(first), set(api_server.outcall_api.CC_INDEX_ASSETS.values()))
+        self.assertEqual(second["cc_index_3128b"]["price"], 16881.0)
+        fetch.assert_called_once_with(
+            api_server.outcall_api.CC_INDEX_PRICES_URL,
+            encoding="gbk",
+        )
+
     def test_market_api_failure_returns_translated_error(self):
         with patch.object(
             api_server.outcall_api,
             "fetch_public_json",
+            side_effect=URLError("upstream unavailable"),
+        ), patch.object(
+            api_server.outcall_api,
+            "fetch_public_text",
+            side_effect=URLError("upstream unavailable"),
+        ), patch.object(
+            api_server.outcall_api,
+            "fetch_public_html",
             side_effect=URLError("upstream unavailable"),
         ):
             response = self.request("/api/market-prices?locale=en")
@@ -1453,6 +1502,50 @@ Invoice Date: 2026-10-20
             error["message"],
             "Prices are temporarily unavailable. Please try again later.",
         )
+
+    def test_market_api_returns_cached_and_available_prices_when_one_source_fails(self):
+        db_manager.save_daily_product_price(
+            "sesame",
+            date.today().isoformat(),
+            date.today().isoformat(),
+            14118,
+            "CNY",
+        )
+
+        def fake_public_json(url):
+            if "gold-api.com" in url:
+                raise URLError("gold unavailable")
+            if "coingecko.com" in url:
+                return {"bitcoin": {"usd": 68000}, "ethereum": {"usd": 3500}}
+            return {"chart": {"result": [{"meta": {"regularMarketPrice": 80}}]}}
+
+        def fake_public_html(url, encoding="utf-8"):
+            if url == api_server.outcall_api.CC_INDEX_PRICES_URL:
+                raise URLError("CC Index unavailable")
+            return (
+                "<table><tr data-currency='美元'><td>美元</td><td>1</td>"
+                "<td>1</td><td>671.31</td></tr></table>"
+            )
+
+        with patch.object(
+            api_server.outcall_api,
+            "fetch_public_json",
+            side_effect=fake_public_json,
+        ), patch.object(
+            api_server.outcall_api,
+            "fetch_public_text",
+            return_value=(
+                'var hq_str_nf_CF0="棉花连续,0,0,0,0,0,15470,0";'
+            ),
+        ), patch.object(
+            api_server.outcall_api,
+            "fetch_public_html",
+            side_effect=fake_public_html,
+        ):
+            result = api_server.outcall_api.get_market_prices()
+        self.assertNotIn("gold", result["prices"])
+        self.assertEqual(result["prices"]["sesame"], 14118)
+        self.assertEqual(result["prices"]["zce_cotton"], 15470.0)
 
     def test_public_market_prices_remain_available_when_cc_index_fails(self):
         def fake_public_json(url):

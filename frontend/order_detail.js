@@ -31,6 +31,9 @@ async function initOrderDetailPage() {
 	let quotationInputs;
 	let benchmark;
 	let delivery;
+	let supplierSelect;
+	let intermediarySelect;
+	let suppliers = [];
 
 	function quotationConfig(product) {
 		const key = product === "cotton" ? "quotation_summary" : product;
@@ -117,6 +120,56 @@ async function initOrderDetailPage() {
 		order = data.order;
 		render();
 	}
+	async function loadSuppliers() {
+		const data = await App.api("/api/suppliers");
+		if (!Array.isArray(data.suppliers)) {
+			throw new Error(App.t("supplier.list_invalid"));
+		}
+		suppliers = data.suppliers;
+	}
+	function renderSupplierOptions() {
+		const supplierOptions = (items, placeholderKey) => {
+			const placeholder = document.createElement("option");
+			placeholder.value = "";
+			placeholder.textContent = App.t(placeholderKey);
+			const result = [placeholder];
+			for (const supplier of items) {
+				const option = document.createElement("option");
+				option.value = String(supplier.id);
+				option.textContent = `${supplier.short_name} · ${supplier.company_name}`;
+				result.push(option);
+			}
+			return result;
+		};
+		supplierSelect.replaceChildren(...supplierOptions(
+			suppliers,
+			"supplier.select_placeholder",
+		));
+		supplierSelect.value = suppliers.some(
+			(item) => String(item.id) === String(order.supplier_id),
+		) ? String(order.supplier_id) : "";
+		renderIntermediaryOptions();
+	}
+	function renderIntermediaryOptions() {
+		if (!intermediarySelect) return;
+		const options = suppliers.filter(
+			(item) => String(item.id) !== supplierSelect.value,
+		);
+		intermediarySelect.replaceChildren();
+		const placeholder = document.createElement("option");
+		placeholder.value = "";
+		placeholder.textContent = App.t("supplier.intermediary_optional");
+		intermediarySelect.append(placeholder);
+		for (const supplier of options) {
+			const option = document.createElement("option");
+			option.value = String(supplier.id);
+			option.textContent = `${supplier.short_name} · ${supplier.company_name}`;
+			intermediarySelect.append(option);
+		}
+		intermediarySelect.value = options.some(
+			(item) => String(item.id) === String(order.intermediary_id),
+		) ? String(order.intermediary_id) : "";
+	}
 	function addInput(parent, key, value, type, options) {
 		const label = document.createElement("label");
 		const title = document.createElement("span");
@@ -154,6 +207,23 @@ async function initOrderDetailPage() {
 		fields.append(quoteHeading, quoteFields);
 		delivery = addInput(quoteFields, "order.delivery_date", order.delivery_date, "date");
 		delivery.required = true;
+		supplierSelect = addInput(
+			quoteFields,
+			"supplier.select",
+			"",
+			null,
+			[],
+		);
+		supplierSelect.required = true;
+		intermediarySelect = addInput(
+			quoteFields,
+			"supplier.intermediary_select",
+			"",
+			null,
+			[],
+		);
+		renderSupplierOptions();
+		supplierSelect.addEventListener("change", renderIntermediaryOptions);
 		for (const name of quoteConfig.columns) {
 			const input = addInput(quoteFields, `market.cotton_column.${name}`, order[name], name === "quotation_date" ? "date" : "text");
 			input.required = name === "quotation_date";
@@ -172,9 +242,10 @@ async function initOrderDetailPage() {
 		]);
 		for (const [name, label, type] of ORDER_PRICING_FIELDS) {
 			const stored = order.pricing_inputs[name];
+			const resolved = stored ?? SUDAN_COTTON_DEFAULTS[name] ?? "";
 			const value = name === "supplier_quote_usd_per_ton"
-				? supplierPriceToDisplay(stored, product)
-				: stored;
+				? supplierPriceToDisplay(resolved, product)
+				: resolved;
 			const fieldLabel = name === "supplier_quote_usd_per_ton"
 				? supplierPriceLabel(product)
 				: label;
@@ -213,17 +284,37 @@ async function initOrderDetailPage() {
 	});
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
-		const payload = { benchmark_source: benchmark.value, delivery_date: delivery.value };
+		const product = order.product_type || order.source_quotation_product || "cotton";
+		const payload = {
+			product,
+			benchmark_source: benchmark.value,
+			delivery_date: delivery.value,
+			supplier_id: supplierSelect.value,
+			intermediary_id: intermediarySelect.value,
+		};
 		for (const [name, input] of quotationInputs) payload[`quotation_${name}`] = input.value;
 		for (const [name, input] of pricingInputs) {
 			payload[`pricing_${name}`] = name === "supplier_quote_usd_per_ton"
 				? supplierPriceToUsdPerTon(
 					input.value,
-					order.product_type || order.source_quotation_product || "cotton",
+					product,
 				)
 				: input.value;
 		}
 		App.setNotice("");
+		if (!payload.supplier_id) {
+			App.setNotice(App.t("supplier.required"));
+			supplierSelect.focus();
+			return;
+		}
+		if (
+			payload.intermediary_id
+			&& payload.intermediary_id === payload.supplier_id
+		) {
+			App.setNotice(App.t("supplier.same_party"));
+			intermediarySelect.focus();
+			return;
+		}
 		update.disabled = true;
 		cancel.disabled = true;
 		for (const input of [...quotationInputs.values(), ...pricingInputs.values(), benchmark, delivery]) input.disabled = true;
@@ -246,7 +337,7 @@ async function initOrderDetailPage() {
 		}
 	});
 	try {
-		await load();
+		await Promise.all([load(), loadSuppliers()]);
 	} catch (error) {
 		handleUnauthorized(error, next);
 	}

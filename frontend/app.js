@@ -935,9 +935,6 @@ async function loadMarketPrices() {
 			result.prices,
 			IMPORT_COTTON_DEFAULTS,
 		);
-		if (!Number.isFinite(importCottonPrice)) {
-			throw new Error(App.t("market.import_cotton_unavailable"));
-		}
 		const derivedFormatter = new Intl.NumberFormat(document.documentElement.lang, {
 			minimumFractionDigits: 2,
 			maximumFractionDigits: 2,
@@ -945,7 +942,9 @@ async function loadMarketPrices() {
 		for (const value of document.querySelectorAll(
 			'[data-market-derived="import_cotton"]',
 		)) {
-			value.textContent = `US¢ ${derivedFormatter.format(importCottonPrice)}`;
+			value.textContent = Number.isFinite(importCottonPrice)
+				? `US¢ ${derivedFormatter.format(importCottonPrice)}`
+				: App.t("market.unavailable_short");
 		}
 		updated.textContent = App.t("market.updated", {
 			time: new Intl.DateTimeFormat(document.documentElement.lang, {

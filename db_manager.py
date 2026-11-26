@@ -14,6 +14,9 @@ DATABASE_PATH = Path(__file__).with_name("uploads.db")
 COTTON_QUOTATION_PATH = Path(__file__).with_name("quotations.xlsx")
 DatabaseError = sqlite3.Error
 PRODUCT_PRICE_TABLES = {
+    "cc_index_3128b": "cc_index_3128b_daily_prices",
+    "cc_index_2227b": "cc_index_2227b_daily_prices",
+    "cc_index_2129b": "cc_index_2129b_daily_prices",
     "sesame": "sesame_daily_prices",
     "peanut": "peanut_daily_prices",
     "peanut_meal": "peanut_meal_daily_prices",

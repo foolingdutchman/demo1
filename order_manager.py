@@ -122,7 +122,7 @@ def validate_order(fields, allow_quotation_id):
         intermediary_id = int(raw_intermediary_id)
     else:
         intermediary_id = None
-    if supplier_id == intermediary_id:
+    if supplier_id is not None and supplier_id == intermediary_id:
         raise ValueError("Supplier and intermediary must differ")
     return (
         product, supplier_id, intermediary_id, values, source, delivery_date,
