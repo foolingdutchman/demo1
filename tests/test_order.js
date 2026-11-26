@@ -28,6 +28,7 @@ test("order page locks an existing quote and converts the supplier price", async
 		},
 	};
 	const values = new Map([["orderDraft", JSON.stringify({
+		product: "cotton",
 		pricing: { domestic_benchmark_cny_per_ton: "15360", fx_cny_per_usd: "6.7" },
 		benchmarkSource: "cc_index_2227b",
 	})]]);
@@ -46,12 +47,20 @@ test("order page locks an existing quote and converts the supplier price", async
 			async api(url, options) {
 				calls.push({ url, options });
 				if (url === "/api/cotton-quotations") return {
-					sheets: { quotation_summary: [
-						{ row_number: 4, batch_number: "original", origin: "Sudan", net_weight_tons: 100 },
+					sheets: {
+						quotation_summary: [
+						{ row_number: 4, batch_number: "original", origin: "Sudan",
+							net_weight_tons: 100, gross_price_cny_per_ton: 17700 },
 						{ row_number: 5, batch_number: "standard", quotation_date: "2026-10-10", net_weight_tons: 0, standard_weight_tons: 42 },
 						{ row_number: 6, batch_number: "missing", net_weight_tons: 0, standard_weight_tons: null },
 						{ row_number: 7, batch_number: "ordered", ordered: true },
-					] },
+						],
+						sesame: [
+							{ row_number: 2, product: "芝麻", processor: "TUHAMA",
+								origin: "SUDAN", net_weight_tons: 100, oil_percent: 50,
+								price_usc_per_mt: 1400 },
+						],
+					},
 				};
 				if (url === "/api/suppliers") return {
 					suppliers: [{
@@ -136,18 +145,40 @@ test("order page locks an existing quote and converts the supplier price", async
 	vm.runInContext("initAuthenticatedPage = async () => true", context);
 	await vm.runInContext("initBookOrderPage()", context);
 	const quoteSelect = elements.get("order-quotation");
-	const quoteFields = elements.get("order-quotation-fields").children;
+	let quoteFields = elements.get("order-quotation-fields").children;
 	const find = (fields, name) =>
 		fields.find((field) => field.children[0].textContent === name).children[1];
 	const pricing = elements.get("order-pricing-fields").children;
 	assert.equal(pricing.length, 3);
 	const quantity = find(pricing, "order.quantity_required");
-	const netWeight = find(quoteFields, "market.cotton_column.net_weight_tons");
+	let netWeight = find(quoteFields, "market.cotton_column.net_weight_tons");
 	quantity.value = "33";
 	quantity.events.input();
 	assert.equal(netWeight.value, "33");
 	assert.equal(netWeight.readOnly, true);
 	assert.equal(quoteSelect.children.find((option) => option.value === "7").disabled, true);
+	elements.get("order-product").value = "sesame";
+	elements.get("order-product").events.change();
+	assert.equal(quoteSelect.children.some((option) => option.value === "2"), true);
+	quoteSelect.value = "2";
+	quoteSelect.events.change();
+	assert.equal(find(pricing, "order.price_required_usd").value, "1400");
+	assert.equal(
+		elements.get("order-quotation-fields").children.some(
+			(field) => field.children[0].textContent === "market.cotton_column.oil_percent",
+		),
+		true,
+	);
+	assert.equal(
+		elements.get("order-quotation-fields").children.some(
+			(field) => field.children[0].textContent === "market.cotton_column.micronaire",
+		),
+		false,
+	);
+	elements.get("order-product").value = "cotton";
+	elements.get("order-product").events.change();
+	quoteFields = elements.get("order-quotation-fields").children;
+	netWeight = find(quoteFields, "market.cotton_column.net_weight_tons");
 	quoteSelect.value = "5";
 	quoteSelect.events.change();
 	assert.equal(quantity.value, "42");
@@ -163,8 +194,10 @@ test("order page locks an existing quote and converts the supplier price", async
 	assert.equal(netWeight.value, 0);
 	quoteSelect.value = "4";
 	quoteSelect.events.change();
+	assert.equal(elements.get("order-product").value, "cotton");
 	assert.equal(find(quoteFields, "market.cotton_column.batch_number").value, "original");
 	assert.equal(find(quoteFields, "market.cotton_column.batch_number").readOnly, true);
+	assert.ok(Math.abs(Number(find(pricing, "order.price_required").value) - 119.83) < 0.01);
 	const quoteDate = find(quoteFields, "market.cotton_column.quotation_date");
 	assert.equal(quoteDate.required, true);
 	assert.equal(quoteDate.readOnly, false);
@@ -192,6 +225,7 @@ test("order page locks an existing quote and converts the supplier price", async
 	await elements.get("order-form").events.submit({ preventDefault() {} });
 	const payload = JSON.parse(calls.find((call) => call.url === "/api/orders").options.body);
 	assert.equal(payload.quotation_id, "4");
+	assert.equal(payload.product, "cotton");
 	assert.equal(payload.quotation_batch_number, "original");
 	assert.equal(payload.quotation_origin, "Sudan");
 	assert.equal(payload.quotation_quotation_date, "2026-11-23");
@@ -258,8 +292,10 @@ test("order list redirects to login and returns after authentication", async () 
 			document, Intl,
 			sessionStorage: {
 				getItem() { return JSON.stringify({
-					quotationId: "5", quotation: { quotation_date: "2026-11-23" },
-					deliveryDate: "2026-12-10", pricing: { quantity_tons: "100" },
+					product: "cotton", quotationId: "5",
+					quotation: { quotation_date: "2026-11-23" },
+					deliveryDate: "2026-12-10",
+					pricing: { quantity_tons: "100", supplier_quote_usd_per_ton: "1102.31" },
 				}); },
 			},
 			App: {
@@ -286,6 +322,9 @@ test("order list redirects to login and returns after authentication", async () 
 		assert.equal(quoteDate.value, "2026-11-23");
 		assert.equal(quoteDate.readOnly, false);
 		assert.equal(elements.get("order-delivery-date").value, "2026-12-10");
+		const supplierPrice = elements.get("order-pricing-fields").children
+			.find((field) => field.children[0].textContent === "order.price_required").children[1];
+		assert.equal(supplierPrice.value, "50");
 	});
 	vm.runInContext(app, context);
 	vm.runInContext(order, context);
@@ -294,4 +333,67 @@ test("order list redirects to login and returns after authentication", async () 
 	await vm.runInContext("initLoginPage()", context);
 	await elements.get("auth-form").events.submit({ preventDefault() {} });
 	assert.equal(window.location.href, "order.html");
+});
+
+test("order page selects the product from the product detail URL", async () => {
+	function element() {
+		return {
+			children: [], events: {}, value: "", textContent: "", hidden: false,
+			append(...items) { this.children.push(...items); },
+			replaceChildren(...items) { this.children = items; },
+			addEventListener(name, callback) { this.events[name] = callback; },
+		};
+	}
+	const elements = new Map();
+	const document = {
+		documentElement: { lang: "en" },
+		addEventListener() {},
+		createElement: element,
+		getElementById(id) {
+			if (!elements.has(id)) elements.set(id, element());
+			return elements.get(id);
+		},
+	};
+	const productSelect = element();
+	elements.set("order-product", productSelect);
+	productSelect.children = ["", "cotton", "sesame", "peanut", "peanut_meal"].map((value) => {
+		const option = element();
+		option.value = value;
+		option.textContent = value;
+		return option;
+	});
+	const context = vm.createContext({
+		document, Intl, window: { location: { search: "?product=sesame" } },
+		location: { search: "?product=sesame" },
+		sessionStorage: {
+			getItem() {
+				return JSON.stringify({ product: "cotton", quotationId: "5" });
+			},
+		},
+		App: {
+			t(key) { return key; },
+			setNotice() {},
+			async api(url) {
+				if (url === "/api/suppliers") return { suppliers: [] };
+				if (url === "/api/cotton-quotations") {
+					return { sheets: { sesame: [] } };
+				}
+				throw new Error(`Unexpected API request: ${url}`);
+			},
+		},
+	});
+	vm.runInContext(app, context);
+	vm.runInContext(order, context);
+	vm.runInContext(
+		"initAuthenticatedPage = async (next) => { globalThis.authenticatedNext = next; return true; }",
+		context,
+	);
+	await vm.runInContext("initBookOrderPage()", context);
+	assert.equal(context.authenticatedNext, "book_order.html?product=sesame");
+	assert.equal(productSelect.value, "sesame");
+	assert.ok(
+		elements.get("order-quotation-fields").children.some(
+			(field) => field.children[0].textContent === "market.cotton_column.oil_percent",
+		),
+	);
 });

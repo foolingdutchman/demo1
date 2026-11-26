@@ -393,6 +393,17 @@ class ApiHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"orders": orders})
 
+    def _handle_list_waybills(self, user_id):
+        try:
+            waybills = db_manager.list_waybills(user_id)
+        except db_manager.DatabaseError:
+            logging.exception("Could not read waybills")
+            self._send_error_json(
+                500, "database_error", self._t("request.database_read_error")
+            )
+            return
+        self._send_json({"waybills": waybills})
+
     def _handle_update_order(self, user_id, order_id):
         fields = self._read_json()
         if fields is None:
@@ -1080,6 +1091,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             user = self._require_user()
             if user is not None:
                 self._handle_list_orders(user[0])
+            return
+        if parsed.path == "/api/waybills":
+            user = self._require_user()
+            if user is not None:
+                self._handle_list_waybills(user[0])
             return
         if parsed.path == "/api/suppliers":
             user = self._require_user()

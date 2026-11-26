@@ -108,3 +108,62 @@ test("order detail renders snapshots, edits fields and confirms deletion", async
 	assert.equal(window.location.href, "order.html");
 	assert.equal(notice, "");
 });
+
+test("order detail uses quotation fields for the saved product", async () => {
+	function element() {
+		return {
+			children: [], events: {}, textContent: "", value: "", hidden: false,
+			append(...items) { this.children.push(...items); },
+			replaceChildren(...items) { this.children = items; },
+			addEventListener(name, callback) { this.events[name] = callback; },
+		};
+	}
+	const elements = new Map();
+	const document = {
+		documentElement: { lang: "en" },
+		addEventListener() {},
+		createElement: element,
+		getElementById(id) {
+			if (!elements.has(id)) elements.set(id, element());
+			return elements.get(id);
+		},
+	};
+	const saved = {
+		id: 6, source_quotation_product: "sesame", created_at: "2026-11-24 01:02:03",
+		delivery_date: "2026-12-10", quotation_date: "2026-11-24",
+		source_quotation_id: 2, batch_number: "sesame-1", oil_percent: 50,
+		processor: "TUHAMA", origin: "SUDAN", benchmark_source: "manual",
+		pricing_inputs: {
+			quantity_tons: "100", supplier_quote_usd_per_ton: "1400",
+		},
+		pricing_result: {
+			max_target_cif_usd_per_ton: 1400, break_even_cif_usd_per_ton: 1400,
+			supplier_evaluation: { cif_usd_per_ton: 1400, profit_cny_per_ton: 0 },
+		},
+	};
+	const context = vm.createContext({
+		document, window: { location: { href: "" } },
+		location: { search: "?id=6" }, URLSearchParams, Intl,
+		App: {
+			t(key) { return key; },
+			setNotice() {},
+			async api() { return { order: saved }; },
+		},
+	});
+	vm.runInContext(app, context);
+	vm.runInContext(order, context);
+	vm.runInContext(detail, context);
+	vm.runInContext("initAuthenticatedPage = async () => true", context);
+	await vm.runInContext("initOrderDetailPage()", context);
+	const quoteFields = elements.get("order-detail-content").children[2].children;
+	const labels = quoteFields.map((field) => field.children[0].textContent);
+	assert.ok(labels.includes("market.cotton_column.oil_percent"));
+	assert.ok(labels.includes("market.cotton_column.crop_year"));
+	assert.ok(!labels.includes("market.cotton_column.micronaire"));
+	elements.get("order-edit").events.click();
+	const quoteInputs = elements.get("order-edit-fields").children[1].children;
+	const inputLabels = quoteInputs.map((field) => field.children[0].textContent);
+	assert.ok(inputLabels.includes("market.cotton_column.oil_percent"));
+	assert.ok(!inputLabels.includes("market.cotton_column.micronaire"));
+	assert.ok(inputLabels.includes("market.cotton_column.crop_year"));
+});

@@ -11,7 +11,7 @@ import quotation_manager
 
 
 DATABASE_PATH = Path(__file__).with_name("uploads.db")
-COTTON_QUOTATION_PATH = Path(__file__).with_name("cotton_quotation.xlsx.xlsx")
+COTTON_QUOTATION_PATH = Path(__file__).with_name("quotations.xlsx")
 DatabaseError = sqlite3.Error
 
 
@@ -84,9 +84,13 @@ def initialize_database():
 
 
 def initialize_orders(connection):
+    quotation_column_types = {
+        column: kind
+        for config in excel_analysis.QUOTATION_SHEETS
+        for column, _header, kind in config["columns"]
+    }
     quotation_columns = ", ".join(
-        f"{column} {kind}"
-        for column, _header, kind in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
+        f"{column} {kind}" for column, kind in quotation_column_types.items()
     )
     connection.execute(
         f"""CREATE TABLE IF NOT EXISTS orders (
@@ -94,6 +98,7 @@ def initialize_orders(connection):
             user_id INTEGER NOT NULL REFERENCES users(id),
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             source_quotation_id INTEGER,
+            source_quotation_product TEXT,
             {quotation_columns},
             quotation_date TEXT,
             delivery_date TEXT,
@@ -108,12 +113,33 @@ def initialize_orders(connection):
         )"""
     )
     columns = {row[1] for row in connection.execute("PRAGMA table_info(orders)")}
-    if "delivery_date" not in columns:
-        connection.execute("ALTER TABLE orders ADD COLUMN delivery_date TEXT")
-    if "supplier_id" not in columns:
-        connection.execute("ALTER TABLE orders ADD COLUMN supplier_id INTEGER")
-    if "intermediary_id" not in columns:
-        connection.execute("ALTER TABLE orders ADD COLUMN intermediary_id INTEGER")
+    for column, definition in {
+        "source_quotation_id": "INTEGER",
+        "source_quotation_product": "TEXT",
+        "delivery_date": "TEXT",
+        "supplier_id": "INTEGER",
+        "intermediary_id": "INTEGER",
+    }.items():
+        if column not in columns:
+            connection.execute(f"ALTER TABLE orders ADD COLUMN {column} {definition}")
+            columns.add(column)
+    for column, kind in quotation_column_types.items():
+        if column not in columns:
+            connection.execute(f"ALTER TABLE orders ADD COLUMN {column} {kind}")
+            columns.add(column)
+    connection.execute(
+        """UPDATE orders
+           SET origin = COALESCE(origin, (
+                   SELECT q.origin FROM cotton_quotation_summary AS q
+                   WHERE q.row_number = orders.source_quotation_id
+               )),
+               product = COALESCE(product, (
+                   SELECT q.product FROM cotton_quotation_summary AS q
+                   WHERE q.row_number = orders.source_quotation_id
+               ))
+           WHERE source_quotation_id IS NOT NULL
+             AND (origin IS NULL OR product IS NULL)"""
+    )
 
 
 def initialize_suppliers(connection):
@@ -206,9 +232,27 @@ def initialize_waybills(connection):
             VOYAGE_NUMBER TEXT,
             COO_INOVICE_NUMBER TEXT,
             COO_INVOICE_DATE TEXT,
+            product TEXT,
+            origin TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )"""
+    )
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(waybills)")
+    }
+    for column in ("product", "origin"):
+        if column not in columns:
+            connection.execute(f"ALTER TABLE waybills ADD COLUMN {column} TEXT")
+    connection.execute(
+        """UPDATE waybills
+           SET product = COALESCE(product, (
+                   SELECT o.product FROM orders AS o WHERE o.id = waybills.order_id
+               )),
+               origin = COALESCE(origin, (
+                   SELECT o.origin FROM orders AS o WHERE o.id = waybills.order_id
+               ))
+           WHERE product IS NULL OR origin IS NULL"""
     )
 
 
@@ -216,7 +260,7 @@ def initialize_cotton_quotations(connection):
     template_path = COTTON_QUOTATION_PATH
     connection.execute("DROP TABLE IF EXISTS cotton_quotation_prices")
     connection.execute("DROP TABLE IF EXISTS cotton_quotation_strength")
-    for sheet_config in excel_analysis.COTTON_QUOTATION_SHEETS:
+    for sheet_config in excel_analysis.QUOTATION_SHEETS:
         column_definitions = ", ".join(
             f"{column} {column_type}"
             for column, _header, column_type in sheet_config["columns"]
@@ -233,41 +277,45 @@ def initialize_cotton_quotations(connection):
             )"""
         )
 
+    for sheet_config in excel_analysis.QUOTATION_SHEETS:
+        table = sheet_config["table"]
+        table_columns = {
+            row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+        }
+        source_migrations = {
+            "quotation_date": "TEXT",
+            "source_upload_id": "INTEGER",
+            "source_sheet_name": "TEXT",
+            "source_row_number": "INTEGER",
+            "source_filename": "TEXT",
+            "owner_user_id": "INTEGER",
+        }
+        for column, definition in source_migrations.items():
+            if column not in table_columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for column, _header, kind in sheet_config["columns"]:
+            if column not in table_columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     summary_table = excel_analysis.COTTON_QUOTATION_SHEETS[0]["table"]
-    table_columns = {
-        row[1] for row in connection.execute(f"PRAGMA table_info({summary_table})")
-    }
-    source_migrations = {
-        "quotation_date": "TEXT",
-        "source_upload_id": "INTEGER",
-        "source_sheet_name": "TEXT",
-        "source_row_number": "INTEGER",
-        "source_filename": "TEXT",
-        "owner_user_id": "INTEGER",
-    }
-    for column, definition in source_migrations.items():
-        if column not in table_columns:
-            connection.execute(
-                f"ALTER TABLE {summary_table} ADD COLUMN {column} {definition}"
-            )
     backfill_cotton_quotation_dates(connection)
-    connection.execute(
-        f"""UPDATE {summary_table}
-            SET source_sheet_name = COALESCE(source_sheet_name, ?),
-                source_row_number = COALESCE(source_row_number, row_number),
-                source_filename = COALESCE(source_filename, ?)
-            WHERE owner_user_id IS NULL""",
-        (excel_analysis.COTTON_QUOTATION_SHEETS[0]["worksheet"], template_path.name),
-    )
-    connection.execute(
-        f"""CREATE UNIQUE INDEX IF NOT EXISTS cotton_quotation_source_row
-            ON {summary_table}
-            (source_upload_id, source_sheet_name, source_row_number)"""
-    )
+    for sheet_config in excel_analysis.QUOTATION_SHEETS:
+        connection.execute(
+            f"""UPDATE {sheet_config['table']}
+                SET source_sheet_name = COALESCE(source_sheet_name, ?),
+                    source_row_number = COALESCE(source_row_number, row_number),
+                    source_filename = COALESCE(source_filename, ?)
+                WHERE owner_user_id IS NULL""",
+            (sheet_config["worksheet"], template_path.name),
+        )
+        connection.execute(
+            f"""CREATE UNIQUE INDEX IF NOT EXISTS {sheet_config['key']}_quotation_source_row
+                ON {sheet_config['table']}
+                (source_upload_id, source_sheet_name, source_row_number)"""
+        )
 
-    if connection.execute(
-        f"SELECT EXISTS (SELECT 1 FROM {summary_table})"
-    ).fetchone()[0]:
+    if all(connection.execute(
+        f"SELECT EXISTS (SELECT 1 FROM {sheet_config['table']})"
+    ).fetchone()[0] for sheet_config in excel_analysis.QUOTATION_SHEETS):
         return
     if not template_path.is_file():
         logging.warning("Cotton quotation workbook is missing: %s", template_path)
@@ -275,30 +323,34 @@ def initialize_cotton_quotations(connection):
 
     workbook = load_workbook(template_path, read_only=True, data_only=True)
     try:
-        for sheet_config in excel_analysis.COTTON_QUOTATION_SHEETS:
+        for sheet_config in excel_analysis.QUOTATION_SHEETS:
             worksheet_name = sheet_config["worksheet"]
             if worksheet_name not in workbook.sheetnames:
-                raise ValueError(
-                    f"Cotton quotation workbook is missing worksheet "
-                    f"{worksheet_name!r}"
-                )
+                continue
             worksheet = workbook[worksheet_name]
             headers = next(
                 worksheet.iter_rows(min_row=1, max_row=1, values_only=True),
                 None,
             )
-            expected_headers = tuple(
-                header for _column, header, _column_type in sheet_config["columns"]
-            )
-            if headers != expected_headers:
-                raise ValueError(
-                    f"Unexpected headers in cotton quotation worksheet "
-                    f"{worksheet_name!r}"
-                )
-
             columns = tuple(
                 column for column, _header, _column_type in sheet_config["columns"]
             )
+            field_by_header = {
+                excel_analysis.normalize_cotton_quotation_header(header): column
+                for column, header, _column_type in sheet_config["columns"]
+            }
+            header_indexes = {
+                field_by_header[excel_analysis.normalize_cotton_quotation_header(header)]: index
+                for index, header in enumerate(headers or ())
+                if excel_analysis.normalize_cotton_quotation_header(header) in field_by_header
+            }
+            if "processor" not in header_indexes or "origin" not in header_indexes:
+                logging.warning("Could not map quotation worksheet %s", worksheet_name)
+                continue
+            if connection.execute(
+                f"SELECT EXISTS (SELECT 1 FROM {sheet_config['table']})"
+            ).fetchone()[0]:
+                continue
             stored_columns = (
                 "row_number",
                 *columns,
@@ -318,9 +370,17 @@ def initialize_cotton_quotations(connection):
             ):
                 if all(value is None for value in row):
                     continue
-                values = list(row[:len(columns)])
-                if values[1] is not None:
-                    values[1] = str(values[1])
+                values = [
+                    row[header_indexes[column]] if column in header_indexes else None
+                    for column in columns
+                ]
+                if "product" in header_indexes:
+                    values[columns.index("product")] = row[header_indexes["product"]]
+                elif "product" in columns:
+                    values[columns.index("product")] = sheet_config.get("product", "")
+                batch_index = columns.index("batch_number") if "batch_number" in columns else None
+                if batch_index is not None and values[batch_index] is not None:
+                    values[batch_index] = str(values[batch_index])
                 records.append(
                     (
                         row_number,
@@ -335,6 +395,34 @@ def initialize_cotton_quotations(connection):
     finally:
         workbook.close()
 
+
+def reset_trade_data():
+    quotation_tables = {
+        sheet_config["table"] for sheet_config in excel_analysis.QUOTATION_SHEETS
+    } | {"cotton_quotation_prices", "cotton_quotation_strength"}
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        for table in (
+            "waybills",
+            "order_related_documents",
+            "order_documents",
+            "orders",
+            "uploads",
+        ):
+            connection.execute(f"DELETE FROM {table}")
+        for table in quotation_tables:
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
+        for table in (
+            "waybills",
+            "order_related_documents",
+            "order_documents",
+            "orders",
+            "uploads",
+            *quotation_tables,
+        ):
+            connection.execute(
+                "DELETE FROM sqlite_sequence WHERE name = ?", (table,)
+            )
+        initialize_cotton_quotations(connection)
 
 def backfill_cotton_quotation_dates(connection):
     table = excel_analysis.COTTON_QUOTATION_SHEETS[0]["table"]
@@ -532,7 +620,7 @@ def delete_session(token_hash):
 def get_cotton_quotations(user_id):
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
         sheets = {}
-        for sheet_config in excel_analysis.COTTON_QUOTATION_SHEETS:
+        for sheet_config in excel_analysis.QUOTATION_SHEETS:
             columns = (
                 "row_number",
                 *(
@@ -546,13 +634,21 @@ def get_cotton_quotations(user_id):
             cursor = connection.execute(
                 f"""SELECT {', '.join(f'q.{column}' for column in columns)},
                            CASE WHEN u.user_id = ? OR q.owner_user_id = ? THEN 1 ELSE 0 END,
-                           EXISTS (SELECT 1 FROM orders AS o
-                                   WHERE o.source_quotation_id = q.row_number)
+                           EXISTS (
+                               SELECT 1 FROM orders AS o
+                               WHERE o.source_quotation_id = q.row_number
+                                 AND o.source_quotation_product = ?
+                           )
                     FROM {sheet_config["table"]} AS q
                     LEFT JOIN uploads AS u ON u.id = q.source_upload_id
                     ORDER BY q.quotation_date IS NULL, q.quotation_date DESC,
                              q.row_number DESC""",
-                (user_id, user_id),
+                (user_id, user_id, {
+                    "quotation_summary": "cotton",
+                    "sesame": "sesame",
+                    "peanut": "peanut",
+                    "peanut_meal": "peanut_meal",
+                }[sheet_config["key"]]),
             )
             sheets[sheet_config["key"]] = [
                 {**dict(zip(columns, row[:-2])), "editable": bool(row[-2]), "ordered": bool(row[-1])}
@@ -583,9 +679,14 @@ def update_cotton_quotation(row_number, user_id, values):
 
 
 def list_orders(user_id, order_id=None):
+    quotation_columns = list(dict.fromkeys(
+        column
+        for config in excel_analysis.QUOTATION_SHEETS
+        for column, _header, _kind in config["columns"]
+    ))
     columns = (
-        "id", "created_at", "source_quotation_id",
-        *(column for column, _header, _kind in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]),
+        "id", "created_at", "source_quotation_id", "source_quotation_product",
+        *quotation_columns,
         "quotation_date", "delivery_date", "source_filename", "source_sheet_name", "benchmark_source",
         "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
         "supplier_id", "intermediary_id", "pricing_inputs", "pricing_result",
@@ -620,6 +721,7 @@ def list_orders(user_id, order_id=None):
             ),
             row,
         ))
+        order["product_type"] = order["source_quotation_product"]
         order["pricing_inputs"] = json.loads(order["pricing_inputs"])
         order["pricing_result"] = json.loads(order["pricing_result"])
         orders.append(order)
@@ -705,8 +807,10 @@ def upsert_waybill(user_id, order_id, related_document_id, fields):
     values = {field: str(fields.get(field) or "").strip() for field in WAYBILL_FIELDS}
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         owned = connection.execute(
-            """SELECT 1 FROM order_related_documents
-               WHERE id = ? AND order_id = ? AND user_id = ?""",
+            """SELECT o.product, o.origin
+               FROM order_related_documents AS d
+               JOIN orders AS o ON o.id = d.order_id
+               WHERE d.id = ? AND d.order_id = ? AND d.user_id = ?""",
             (related_document_id, order_id, user_id),
         ).fetchone()
         if owned is None:
@@ -719,20 +823,26 @@ def upsert_waybill(user_id, order_id, related_document_id, fields):
             connection.execute(
                 f"""UPDATE waybills
                     SET {', '.join(f'{field} = ?' for field in WAYBILL_FIELDS)},
+                        product = ?, origin = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?""",
-                (*(values[field] for field in WAYBILL_FIELDS), existing[0]),
+                (
+                    *(values[field] for field in WAYBILL_FIELDS),
+                    owned[0], owned[1], existing[0],
+                ),
             )
             waybill_id = existing[0]
         else:
             cursor = connection.execute(
                 f"""INSERT INTO waybills
-                    (order_id, related_document_id, {', '.join(WAYBILL_FIELDS)})
-                    VALUES (?, ?, {', '.join('?' for _ in WAYBILL_FIELDS)})""",
+                    (order_id, related_document_id, {', '.join(WAYBILL_FIELDS)},
+                     product, origin)
+                    VALUES (?, ?, {', '.join('?' for _ in WAYBILL_FIELDS)}, ?, ?)""",
                 (
                     order_id,
                     related_document_id,
                     *(values[field] for field in WAYBILL_FIELDS),
+                    owned[0], owned[1],
                 ),
             )
             waybill_id = cursor.lastrowid
@@ -741,7 +851,7 @@ def upsert_waybill(user_id, order_id, related_document_id, fields):
 
 def get_waybill(connection, waybill_id):
     row = connection.execute(
-        f"""SELECT id, related_document_id, {', '.join(WAYBILL_FIELDS)},
+        f"""SELECT id, related_document_id, product, origin, {', '.join(WAYBILL_FIELDS)},
                    created_at, updated_at
            FROM waybills WHERE id = ?""",
         (waybill_id,),
@@ -750,6 +860,8 @@ def get_waybill(connection, waybill_id):
         (
             "id",
             "related_document_id",
+            "product",
+            "origin",
             *WAYBILL_FIELDS,
             "created_at",
             "updated_at",
@@ -758,24 +870,34 @@ def get_waybill(connection, waybill_id):
     )) if row else None
 
 
-def list_waybills(user_id, order_id):
+def list_waybills(user_id, order_id=None):
     with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        conditions = ["d.user_id = ?"]
+        parameters = [user_id]
+        if order_id is not None:
+            conditions.append("w.order_id = ?")
+            parameters.append(order_id)
         rows = connection.execute(
-            f"""SELECT w.id, w.related_document_id,
+            f"""SELECT w.id, w.order_id, w.related_document_id,
+                       o.product, o.origin,
                        {', '.join(f'w.{field}' for field in WAYBILL_FIELDS)},
                        w.created_at, w.updated_at
                 FROM waybills AS w
                 JOIN order_related_documents AS d
                   ON d.id = w.related_document_id
-                WHERE w.order_id = ? AND d.user_id = ?
+                JOIN orders AS o ON o.id = w.order_id
+                WHERE {' AND '.join(conditions)}
                 ORDER BY w.id DESC""",
-            (order_id, user_id),
+            parameters,
         ).fetchall()
     return [
         dict(zip(
             (
                 "id",
+                "order_id",
                 "related_document_id",
+                "product",
+                "origin",
                 *WAYBILL_FIELDS,
                 "created_at",
                 "updated_at",
@@ -981,17 +1103,19 @@ def create_order_documents(user_id, order_id, documents):
     return stored
 
 
-def create_order(user_id, supplier_id, intermediary_id, quotation_id, quotation,
+def create_order(user_id, product, supplier_id, intermediary_id, quotation_id, quotation,
                  benchmark_source, delivery_date, pricing_inputs, pricing_result,
                  quantity_tons, supplier_price, quote_basis):
-    allowed = {
-        column for column, _header, _kind
-        in excel_analysis.COTTON_QUOTATION_SHEETS[0]["columns"]
-    } | {"quotation_date", "source_filename", "source_sheet_name"}
-    if quotation.keys() != allowed:
-        raise ValueError("Invalid order quotation fields")
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
+        quote_config = quotation_manager.quotation_config(product)
+        if quote_config is None:
+            raise ValueError("Invalid product")
+        allowed = {
+            column for column, _header, _kind in quote_config["columns"]
+        } | {"quotation_date", "source_filename", "source_sheet_name"}
+        if quotation.keys() != allowed:
+            raise ValueError("Invalid order quotation fields")
         for party_id in (supplier_id, intermediary_id):
             if party_id is not None and not connection.execute(
                 "SELECT 1 FROM suppliers WHERE id = ? AND user_id = ?",
@@ -1003,13 +1127,15 @@ def create_order(user_id, supplier_id, intermediary_id, quotation_id, quotation,
         if quotation_id is not None:
             quote_columns = tuple(quotation)
             row = connection.execute(
-                f"SELECT {', '.join(quote_columns)} FROM cotton_quotation_summary WHERE row_number = ?",
+                f"SELECT {', '.join(quote_columns)} FROM {quote_config['table']} WHERE row_number = ?",
                 (quotation_id,),
             ).fetchone()
             if row is None:
                 raise ValueError("Quotation not found")
             if connection.execute(
-                "SELECT 1 FROM orders WHERE source_quotation_id = ?", (quotation_id,),
+                """SELECT 1 FROM orders
+                   WHERE source_quotation_id = ? AND source_quotation_product = ?""",
+                (quotation_id, product),
             ).fetchone():
                 raise QuotationAlreadyOrdered("Quotation already ordered")
             submitted_date = quotation["quotation_date"]
@@ -1027,13 +1153,14 @@ def create_order(user_id, supplier_id, intermediary_id, quotation_id, quotation,
             quotation["net_weight_tons"] = quantity_tons
             quote_columns = tuple(quotation)
             cursor = connection.execute(
-                f"INSERT INTO cotton_quotation_summary ({', '.join(quote_columns)}, owner_user_id) "
+                f"INSERT INTO {quote_config['table']} ({', '.join(quote_columns)}, owner_user_id) "
                 f"VALUES ({', '.join('?' for _ in quote_columns)}, ?)",
                 (*quotation.values(), user_id),
             )
             quotation_id = cursor.lastrowid
         columns = (
-            "user_id", "source_quotation_id", *quotation.keys(), "benchmark_source", "delivery_date",
+            "user_id", "source_quotation_id", "source_quotation_product",
+            *quotation.keys(), "benchmark_source", "delivery_date",
             "supplier_id", "intermediary_id", "pricing_inputs", "pricing_result", "quantity_tons",
             "supplier_price_usd_per_ton", "supplier_quote_basis",
         )
@@ -1041,7 +1168,7 @@ def create_order(user_id, supplier_id, intermediary_id, quotation_id, quotation,
             f"INSERT INTO orders ({', '.join(columns)}) "
             f"VALUES ({', '.join('?' for _ in columns)})",
             (
-                user_id, quotation_id, *quotation.values(), benchmark_source, delivery_date,
+                user_id, quotation_id, product, *quotation.values(), benchmark_source, delivery_date,
                 supplier_id, intermediary_id, pricing_inputs, pricing_result, quantity_tons,
                 supplier_price, quote_basis,
             ),
@@ -1049,22 +1176,28 @@ def create_order(user_id, supplier_id, intermediary_id, quotation_id, quotation,
         return cursor.lastrowid
 
 
-def update_order(user_id, order_id, supplier_id, intermediary_id, quotation,
+def update_order(user_id, order_id, product, supplier_id, intermediary_id, quotation,
                  benchmark_source, delivery_date, pricing_inputs, pricing_result,
                  quantity_tons, supplier_price, quote_basis):
     columns = (
-        *quotation.keys(), "benchmark_source", "delivery_date", "supplier_id", "intermediary_id", "pricing_inputs",
+        "source_quotation_product", *quotation.keys(), "benchmark_source", "delivery_date", "supplier_id", "intermediary_id", "pricing_inputs",
         "pricing_result", "quantity_tons", "supplier_price_usd_per_ton", "supplier_quote_basis",
     )
     with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
         cursor = connection.execute(
             f"UPDATE orders SET {', '.join(f'{column} = ?' for column in columns)} "
             "WHERE id = ? AND user_id = ?",
-            (*quotation.values(), benchmark_source, delivery_date, supplier_id, intermediary_id, pricing_inputs,
+            (product, *quotation.values(), benchmark_source, delivery_date, supplier_id, intermediary_id, pricing_inputs,
              pricing_result, quantity_tons, supplier_price, quote_basis, order_id, user_id),
         )
         purchase_contract_deleted = 0
         if cursor.rowcount:
+            connection.execute(
+                """UPDATE waybills
+                   SET product = ?, origin = ?
+                   WHERE order_id = ?""",
+                (quotation.get("product"), quotation.get("origin"), order_id),
+            )
             deletion = connection.execute(
                 """DELETE FROM order_documents
                    WHERE order_id = ? AND user_id = ?

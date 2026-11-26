@@ -32,6 +32,12 @@ async function initOrderDetailPage() {
 	let benchmark;
 	let delivery;
 
+	function quotationConfig(product) {
+		const key = product === "cotton" ? "quotation_summary" : product;
+		return PRODUCT_QUOTATION_TABLES.find((item) => item.key === key)
+			|| PRODUCT_QUOTATION_TABLES[0];
+	}
+
 	function addFields(parent, title, values) {
 		const heading = document.createElement("h2");
 		heading.textContent = App.t(title);
@@ -54,6 +60,8 @@ async function initOrderDetailPage() {
 		return option ? App.t(option[1]) : value;
 	}
 	function render() {
+		const product = order.product_type || order.source_quotation_product || "cotton";
+		const quoteConfig = quotationConfig(product);
 		const pricing = order.pricing_inputs;
 		const result = order.pricing_result;
 		if (!pricing || typeof pricing !== "object" || !result || typeof result !== "object" ||
@@ -72,14 +80,19 @@ async function initOrderDetailPage() {
 			["order.source_quotation", order.source_quotation_id],
 			["supplier.select", order.supplier_short_name],
 			["supplier.intermediary_select", order.intermediary_short_name],
-			...COTTON_QUOTATION_TABLES[0].columns.map((name) =>
+			...quoteConfig.columns.map((name) =>
 				[`market.cotton_column.${name}`, order[name]]),
 		]);
 		addFields(content, "order.pricing", [
 			["market.sudan_benchmark_source_label", optionLabel(ORDER_BENCHMARK_SOURCES, order.benchmark_source)],
 			...ORDER_PRICING_FIELDS.map(([name, label, type]) => {
-				const value = name === "supplier_quote_usd_per_ton" ? usdPerTonToUsc(pricing[name]) : pricing[name];
-				return [label, type ? optionLabel(ORDER_SELECT_OPTIONS[type], value) : value];
+				const value = name === "supplier_quote_usd_per_ton"
+					? supplierPriceToDisplay(pricing[name], product)
+					: pricing[name];
+				const fieldLabel = name === "supplier_quote_usd_per_ton"
+					? supplierPriceLabel(product)
+					: label;
+				return [fieldLabel, type ? optionLabel(ORDER_SELECT_OPTIONS[type], value) : value];
 			}),
 		]);
 		const formatter = new Intl.NumberFormat(document.documentElement.lang, { maximumFractionDigits: 2 });
@@ -129,6 +142,8 @@ async function initOrderDetailPage() {
 		return input;
 	}
 	function editOrder() {
+		const product = order.product_type || order.source_quotation_product || "cotton";
+		const quoteConfig = quotationConfig(product);
 		fields.replaceChildren();
 		pricingInputs = new Map();
 		quotationInputs = new Map();
@@ -139,7 +154,7 @@ async function initOrderDetailPage() {
 		fields.append(quoteHeading, quoteFields);
 		delivery = addInput(quoteFields, "order.delivery_date", order.delivery_date, "date");
 		delivery.required = true;
-		for (const name of COTTON_QUOTATION_TABLES[0].columns) {
+		for (const name of quoteConfig.columns) {
 			const input = addInput(quoteFields, `market.cotton_column.${name}`, order[name], name === "quotation_date" ? "date" : "text");
 			input.required = name === "quotation_date";
 			quotationInputs.set(name, input);
@@ -157,9 +172,14 @@ async function initOrderDetailPage() {
 		]);
 		for (const [name, label, type] of ORDER_PRICING_FIELDS) {
 			const stored = order.pricing_inputs[name];
-			const value = name === "supplier_quote_usd_per_ton" ? usdPerTonToUsc(stored) : stored;
+			const value = name === "supplier_quote_usd_per_ton"
+				? supplierPriceToDisplay(stored, product)
+				: stored;
+			const fieldLabel = name === "supplier_quote_usd_per_ton"
+				? supplierPriceLabel(product)
+				: label;
 			const input = visiblePricingFields.has(name)
-				? addInput(pricingFields, label, value, type ? null : "number", type ? ORDER_SELECT_OPTIONS[type] : null)
+				? addInput(pricingFields, fieldLabel, value, type ? null : "number", type ? ORDER_SELECT_OPTIONS[type] : null)
 				: { value: value ?? "", disabled: false, required: false };
 			input.required = visiblePricingFields.has(name);
 			pricingInputs.set(name, input);
@@ -196,7 +216,12 @@ async function initOrderDetailPage() {
 		const payload = { benchmark_source: benchmark.value, delivery_date: delivery.value };
 		for (const [name, input] of quotationInputs) payload[`quotation_${name}`] = input.value;
 		for (const [name, input] of pricingInputs) {
-			payload[`pricing_${name}`] = name === "supplier_quote_usd_per_ton" ? uscToUsdPerTon(input.value) : input.value;
+			payload[`pricing_${name}`] = name === "supplier_quote_usd_per_ton"
+				? supplierPriceToUsdPerTon(
+					input.value,
+					order.product_type || order.source_quotation_product || "cotton",
+				)
+				: input.value;
 		}
 		App.setNotice("");
 		update.disabled = true;

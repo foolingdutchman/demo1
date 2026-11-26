@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>新建棉花订单</title>
+	<title>新建订单</title>
 	<style>
 		* { box-sizing: border-box; }
 		body { margin: 0; min-height: 100vh; color: #233047; background: linear-gradient(145deg, #edf5f3, #f8f5ed); font-family: "Microsoft YaHei", sans-serif; }
@@ -37,7 +37,7 @@
 		<div class="account">
 			<span id="username"></span>
 			<a href="order.html" data-i18n="order.list_title"></a>
-			<a href="financial_assets_marketing_detail.html?asset=zce_cotton&amp;return=assets" data-i18n="order.back"></a>
+			<a id="order-back" href="assets.html" data-i18n="site.back"></a>
 			<button id="logout-button" type="button" data-i18n="site.logout"></button>
 			<div class="language-switch" id="language-switch"></div>
 		</div>
@@ -49,6 +49,16 @@
 			<p class="notice" id="notice" role="alert"></p>
 			<p class="status" id="order-status" role="status"></p>
 			<form id="order-form">
+				<label>
+					<span data-i18n="order.product"></span>
+					<select id="order-product" required>
+						<option value="" data-i18n="order.product_placeholder" disabled></option>
+						<option value="cotton" data-i18n="trade.cotton"></option>
+						<option value="sesame" data-i18n="trade.sesame"></option>
+						<option value="peanut" data-i18n="trade.peanut"></option>
+						<option value="peanut_meal" data-i18n="trade.peanut_meal"></option>
+					</select>
+				</label>
 				<h2 data-i18n="order.pricing"></h2>
 				<p class="hint" data-i18n="order.business_fields_note"></p>
 				<label><span data-i18n="order.delivery_date"></span><input id="order-delivery-date" type="date" required></label>

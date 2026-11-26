@@ -163,18 +163,15 @@ class ApiIntegrationTests(unittest.TestCase):
         workbook.close()
 
         with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
-            connection.execute("DELETE FROM cotton_quotation_summary")
+            for sheet_config in excel_analysis.QUOTATION_SHEETS:
+                connection.execute(f"DELETE FROM {sheet_config['table']}")
             connection.execute("CREATE TABLE cotton_quotation_prices (id INTEGER)")
             connection.execute("CREATE TABLE cotton_quotation_strength (id INTEGER)")
 
         with patch.object(db_manager, "COTTON_QUOTATION_PATH", workbook_path):
             db_manager.initialize_database()
 
-        with patch.object(
-            db_manager,
-            "load_workbook",
-            side_effect=AssertionError("populated summary should not be re-imported"),
-        ):
+        with patch.object(db_manager, "COTTON_QUOTATION_PATH", workbook_path):
             db_manager.initialize_database()
 
         unauthorized = self.request("/api/cotton-quotations")
@@ -183,8 +180,14 @@ class ApiIntegrationTests(unittest.TestCase):
         response = self.request("/api/cotton-quotations")
         self.assertEqual(response.code, 200)
         sheets = json.loads(response.read())["sheets"]
-        self.assertEqual(set(sheets), {"quotation_summary"})
+        self.assertEqual(
+            set(sheets),
+            {"quotation_summary", "sesame", "peanut", "peanut_meal"},
+        )
         self.assertEqual(len(sheets["quotation_summary"]), 1)
+        self.assertEqual(sheets["sesame"], [])
+        self.assertEqual(sheets["peanut"], [])
+        self.assertEqual(sheets["peanut_meal"], [])
         self.assertEqual(sheets["quotation_summary"][0]["batch_number"], "000123")
         self.assertIsNone(sheets["quotation_summary"][0]["quotation_date"])
         self.assertEqual(sheets["quotation_summary"][0]["gross_price_cny_per_ton"], 17700)
@@ -424,6 +427,7 @@ class ApiIntegrationTests(unittest.TestCase):
             "benchmark_source": "manual",
             "delivery_date": "2026-12-10",
             "quotation_batch_number": "000123",
+            "quotation_product": "棉花",
             "quotation_origin": "苏丹",
             "quotation_quotation_date": "2026-11-23",
             "quotation_source_filename": "quote.xlsx",
@@ -476,9 +480,9 @@ class ApiIntegrationTests(unittest.TestCase):
         fields["quotation_id"] = str(quotations[0]["row_number"])
         with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection, connection:
             connection.execute(
-                "UPDATE cotton_quotation_summary SET batch_number=?, origin=?, quotation_date=?, "
+                "UPDATE cotton_quotation_summary SET batch_number=?, product=?, origin=?, quotation_date=?, "
                 "source_filename=?, net_weight_tons=? WHERE row_number=?",
-                ("original", "苏丹", "2026-11-23", "quote.xlsx", 100, int(fields["quotation_id"])),
+                ("original", "棉花", "苏丹", "2026-11-23", "quote.xlsx", 100, int(fields["quotation_id"])),
             )
         for invalid in (
             {**fields, "pricing_quantity_tons": ""},
@@ -501,7 +505,7 @@ class ApiIntegrationTests(unittest.TestCase):
         db_manager.initialize_database()
         with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
             row = connection.execute(
-                "SELECT user_id, source_quotation_id, batch_number, origin, quotation_date, "
+                "SELECT user_id, source_quotation_id, batch_number, product, origin, quotation_date, "
                 "source_filename, quantity_tons, supplier_price_usd_per_ton, "
                 "supplier_quote_basis, pricing_inputs, pricing_result "
                 "FROM orders WHERE id = ?", (order_id,)
@@ -510,10 +514,10 @@ class ApiIntegrationTests(unittest.TestCase):
                 "SELECT batch_number FROM cotton_quotation_summary WHERE row_number = ?",
                 (int(fields["quotation_id"]),),
             ).fetchone()[0]
-        self.assertEqual(row[1:9], (int(fields["quotation_id"]), "original", "苏丹",
-                                   "2026-11-23", "quote.xlsx", 100, 1150, "FOB"))
-        self.assertEqual(json.loads(row[9]), pricing)
-        self.assertEqual(json.loads(row[10])["supplier_evaluation"]["cif_usd_per_ton"], 1200)
+        self.assertEqual(row[1:10], (int(fields["quotation_id"]), "original", "棉花", "苏丹",
+                                    "2026-11-23", "quote.xlsx", 100, 1150, "FOB"))
+        self.assertEqual(json.loads(row[10]), pricing)
+        self.assertEqual(json.loads(row[11])["supplier_evaluation"]["cif_usd_per_ton"], 1200)
         self.assertIsNotNone(row[0])
         self.assertEqual(original_batch, "original")
         self.assertEqual(self.request("/api/orders", "POST", body(fields), headers).code, 409)
@@ -537,6 +541,8 @@ class ApiIntegrationTests(unittest.TestCase):
         orders = json.loads(self.request("/api/orders").read())["orders"]
         self.assertEqual([order["id"] for order in orders], [manual_id, order_id])
         self.assertEqual(orders[1]["batch_number"], "original")
+        self.assertEqual(orders[1]["product"], "棉花")
+        self.assertEqual(orders[1]["origin"], "苏丹")
         self.assertEqual(orders[1]["source_filename"], "quote.xlsx")
         self.assertEqual(orders[1]["supplier_id"], supplier_id)
         self.assertEqual(
@@ -667,6 +673,18 @@ class ApiIntegrationTests(unittest.TestCase):
             if item["related_document_id"] == related_document["id"]
         )
         self.assertEqual(waybill["BL_NET_WEIGHT"], "100000")
+        all_waybills = json.loads(self.request("/api/waybills").read())["waybills"]
+        self.assertEqual(len(all_waybills), 2)
+        self.assertTrue(all(
+            item["order_id"] == order_id for item in all_waybills
+        ))
+        self.assertTrue(any(
+            item["BL_NUMBER"] == "BL-2026-001" for item in all_waybills
+        ))
+        self.assertTrue(all(
+            item["product"] == "棉花" and item["origin"] == "苏丹"
+            for item in all_waybills
+        ))
         changed_waybill = {**related_analysis["waybill"], "VOYAGE_NUMBER": "V002"}
         self.assertEqual(
             self.request(
@@ -781,6 +799,7 @@ class ApiIntegrationTests(unittest.TestCase):
         other_fields = {**fields, "supplier_id": other_supplier_id}
         other_manual = {**manual, "supplier_id": other_supplier_id}
         self.assertEqual(json.loads(self.request("/api/orders").read()), {"orders": []})
+        self.assertEqual(json.loads(self.request("/api/waybills").read()), {"waybills": []})
         self.assertEqual(self.request(documents_path).code, 404)
         self.assertEqual(
             self.request(

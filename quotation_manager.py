@@ -2,22 +2,42 @@ from datetime import date
 import math
 import re
 
-from excel_analysis import COTTON_QUOTATION_SHEETS
+from excel_analysis import COTTON_QUOTATION_SHEETS, QUOTATION_SHEETS
 
 
 QUOTATION_TYPES = {
     column: kind for column, _header, kind in COTTON_QUOTATION_SHEETS[0]["columns"]
 }
 QUOTATION_TYPES["quotation_date"] = "DATE"
+PRODUCT_QUOTATION_KEYS = {
+    "cotton": "quotation_summary",
+    "sesame": "sesame",
+    "peanut": "peanut",
+    "peanut_meal": "peanut_meal",
+}
 
 
-def validate_fields(fields, allow_empty_date=False):
-    if not fields or not fields.keys() <= QUOTATION_TYPES.keys():
+def quotation_config(product):
+    key = PRODUCT_QUOTATION_KEYS.get(product)
+    return next(
+        (config for config in QUOTATION_SHEETS if config["key"] == key),
+        None,
+    )
+
+
+def validate_fields(fields, allow_empty_date=False, product=None):
+    config = quotation_config(product) if product else None
+    types = (
+        {column: kind for column, _header, kind in config["columns"]}
+        if config else QUOTATION_TYPES
+    )
+    types["quotation_date"] = "DATE"
+    if not fields or not fields.keys() <= types.keys():
         raise ValueError("Invalid quotation fields")
     values = {}
     for column, raw in fields.items():
         value = raw.strip()
-        kind = QUOTATION_TYPES[column]
+        kind = types[column]
         if kind == "DATE":
             if not value and allow_empty_date:
                 value = None

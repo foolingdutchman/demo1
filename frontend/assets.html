@@ -14,14 +14,12 @@
 		button { min-height: 40px; padding: 8px 14px; color: #fff; background: #536dfe; border: 0; border-radius: 7px; font: inherit; cursor: pointer; }
 		button:hover { background: #4058e8; }
 		.language-switch button { min-height: 34px; padding: 5px 10px; color: #087f70; background: #f1f5f4; border: 1px solid #dfe8e5; }
-		main { max-width: 760px; margin: 3vh auto; padding: 24px; text-align: center; }
-		.card, .records { background: #fff; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; }
-		.card { margin-top: 20px; padding: 48px 28px; }
+		main { max-width: 1180px; margin: 3vh auto; padding: 24px; text-align: center; }
+		.records { background: #fff; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; }
 		.records { margin-top: 20px; padding: 24px; text-align: left; }
-		h1 { margin: 0 0 14px; font-size: clamp(32px, 7vw, 52px); }
 		p { color: #68758a; line-height: 1.8; }
-		.upload-form { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; margin-top: 22px; }
-		.records h2 { margin: 0 0 16px; font-size: 20px; }
+		.records-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; }
+		.records h2 { margin: 0; font-size: 20px; }
 		.table-wrap { overflow-x: auto; }
 		table { width: 100%; border-collapse: collapse; text-align: left; }
 		th, td { padding: 12px 10px; border-bottom: 1px solid #e7eceb; font-size: 14px; }
@@ -32,14 +30,15 @@
 		.empty { color: #68758a; }
 		.notice { margin: 14px 0; color: #9c2f25; }
 		.notice:empty { display: none; }
-		.view-all { display: inline-flex; margin-top: 16px; padding: 10px 16px; color: #fff; background: #536dfe; border-radius: 7px; font-weight: 700; text-decoration: none; }
-		.market { margin-top: 0; padding: 24px; background: #fff; border: 1px solid #e7eceb; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; text-align: left; }
+		.view-all { display: inline-flex; padding: 9px 14px; color: #fff; background: #536dfe; border-radius: 7px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+		.market, .trade-products { padding: 24px; background: #fff; border: 1px solid #e7eceb; border-radius: 16px; box-shadow: 0 12px 35px #24344a12; text-align: left; }
+		.trade-products { margin-top: 20px; }
 		.market-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
 		.market-heading h2 { margin: 0 0 6px; font-size: 20px; }
 		.market-heading p, .market-updated { margin: 0; color: #68758a; font-size: 14px; }
 		.market-prices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 		.market-price { display: block; min-width: 0; padding: 16px; color: inherit; background: #f8fafc; border: 1px solid #e7eceb; border-radius: 10px; text-decoration: none; }
-		.market-price:hover, .market-price:focus-visible { border-color: #9dc9c2; outline: 2px solid #087f7030; }
+		a.market-price:hover, a.market-price:focus-visible { border-color: #9dc9c2; outline: 2px solid #087f7030; }
 		.market-price h3 { margin: 0 0 10px; color: #68758a; font-size: 14px; }
 		.market-value { margin: 0; color: #233047; font-size: clamp(18px, 2.5vw, 24px); font-weight: 700; overflow-wrap: anywhere; }
 		.market-unit { margin: 6px 0 0; color: #8792a4; font-size: 13px; }
@@ -97,16 +96,6 @@
 					<p class="market-value" data-market-value="ice_cotton" data-i18n="market.loading"></p>
 					<p class="market-unit" data-i18n="market.ice_cotton_unit"></p>
 				</a>
-				<a class="market-price" href="financial_assets_marketing_detail.html?asset=zce_cotton&amp;return=assets">
-					<h3 data-i18n="market.zce_cotton"></h3>
-					<p class="market-value" data-market-value="zce_cotton" data-i18n="market.loading"></p>
-					<p class="market-unit" data-i18n="market.zce_cotton_unit"></p>
-					<div class="market-derived">
-						<span class="market-derived-label" data-i18n="market.import_cotton_price"></span>
-						<strong class="market-derived-value" data-market-derived="import_cotton" data-i18n="market.loading"></strong>
-						<span class="market-derived-unit" data-i18n="market.import_cotton_unit"></span>
-					</div>
-				</a>
 				<a class="market-price" href="financial_assets_marketing_detail.html?asset=cc_index_3128b&amp;return=assets">
 					<h3 data-i18n="market.cc_index_3128b"></h3>
 					<p class="market-value" data-market-value="cc_index_3128b" data-i18n="market.loading"></p>
@@ -134,20 +123,52 @@
 			<p class="market-status" id="market-status" role="status"></p>
 			<p class="market-updated" id="market-updated"></p>
 		</section>
-		<section class="card">
-			<h1 data-i18n="site.upload_title"></h1>
-			<p data-i18n="site.upload_hint"></p>
-			<form class="upload-form" id="upload-form">
-				<input id="upload-file" type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.txt,.md,.xls,.xlsx,.csv,.log,.json" required>
-				<button type="submit" data-i18n="site.upload"></button>
-			</form>
-			<p class="notice" id="notice" role="alert"></p>
+		<section class="trade-products" aria-labelledby="trade-products-title">
+			<div class="market-heading">
+				<div>
+					<h2 id="trade-products-title" data-i18n="trade.title"></h2>
+					<p data-i18n="trade.description"></p>
+				</div>
+			</div>
+			<div class="market-prices" id="trade-product-list" aria-live="polite">
+				<a class="market-price" href="/product/cotton?return=assets">
+					<h3 data-i18n="market.zce_cotton"></h3>
+					<p class="market-value" data-market-value="zce_cotton" data-i18n="market.loading"></p>
+					<p class="market-unit" data-i18n="market.zce_cotton_unit"></p>
+					<div class="market-derived">
+						<span class="market-derived-label" data-i18n="market.import_cotton_price"></span>
+						<strong class="market-derived-value" data-market-derived="import_cotton" data-i18n="market.loading"></strong>
+						<span class="market-derived-unit" data-i18n="market.import_cotton_unit"></span>
+					</div>
+				</a>
+				<a class="market-price" href="/product.html?product=sesame&amp;return=assets">
+					<h3 data-i18n="trade.sesame"></h3>
+					<p class="market-value" data-i18n="trade.price_pending"></p>
+				</a>
+				<a class="market-price" href="/product.html?product=peanut&amp;return=assets">
+					<h3 data-i18n="trade.peanut"></h3>
+					<p class="market-value" data-i18n="trade.price_pending"></p>
+				</a>
+				<a class="market-price" href="/product.html?product=peanut_meal&amp;return=assets">
+					<h3 data-i18n="trade.peanut_meal"></h3>
+					<p class="market-value" data-i18n="trade.price_pending"></p>
+				</a>
+			</div>
 		</section>
 		<section class="records">
-			<h2 data-i18n="site.my_uploads"></h2>
-			<div id="upload-list"></div>
-			<a class="view-all" href="list.html" data-i18n="site.view_all"></a>
+			<div class="records-heading">
+				<h2 data-i18n="order.list_title"></h2>
+				<a class="view-all" href="book_order.html" data-i18n="order.create_button"></a>
+			</div>
+			<div id="assets-orders-list" aria-live="polite"></div>
 		</section>
+		<section class="records">
+			<div class="records-heading">
+				<h2 data-i18n="waybill.list_title"></h2>
+			</div>
+			<div id="assets-waybills-list" aria-live="polite"></div>
+		</section>
+		<p class="notice" id="notice" role="alert"></p>
 		<footer data-i18n="site.footer"></footer>
 	</main>
 	<script src="api-config.js"></script>

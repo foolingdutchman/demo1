@@ -24,6 +24,14 @@ SOURCE_FIELDS = {"source_filename", "source_sheet_name"}
 
 
 def validate_order(fields, allow_quotation_id):
+    product = fields.get("product", "cotton")
+    quotation_config = quotation_manager.quotation_config(product)
+    if quotation_config is None:
+        raise ValueError("Invalid product")
+    quotation_types = {
+        column: kind for column, _header, kind in quotation_config["columns"]
+    }
+    quotation_types["quotation_date"] = "DATE"
     pricing = {
         key.removeprefix("pricing_"): value
         for key, value in fields.items() if key.startswith("pricing_")
@@ -35,15 +43,15 @@ def validate_order(fields, allow_quotation_id):
     }
     allowed = (
         {f"pricing_{field}" for field in PRICING_FIELDS}
-        | {f"quotation_{field}" for field in quotation_manager.QUOTATION_TYPES}
+        | {f"quotation_{field}" for field in quotation_types}
         | {f"quotation_{field}" for field in SOURCE_FIELDS}
-        | {"benchmark_source", "delivery_date", "supplier_id", "intermediary_id"}
+        | {"product", "benchmark_source", "delivery_date", "supplier_id", "intermediary_id"}
     )
     if allow_quotation_id:
         allowed.add("quotation_id")
     if fields.keys() - allowed or pricing.keys() != PRICING_FIELDS:
         raise ValueError("Invalid order fields")
-    if not allow_quotation_id and quotation.keys() != quotation_manager.QUOTATION_TYPES.keys() | SOURCE_FIELDS:
+    if not allow_quotation_id and quotation.keys() != quotation_types.keys() | SOURCE_FIELDS:
         raise ValueError("Incomplete order quotation fields")
     source = fields.get("benchmark_source")
     if source not in BENCHMARK_SOURCES:
@@ -90,8 +98,8 @@ def validate_order(fields, allow_quotation_id):
         }
     if result["inputs"]["quantity_tons"] is None or result["inputs"]["supplier_quote_usd_per_ton"] is None:
         raise ValueError("Quantity and supplier price are required")
-    data = {field: quotation.get(field, "") for field in quotation_manager.QUOTATION_TYPES}
-    values = quotation_manager.validate_fields(data)
+    data = {field: quotation.get(field, "") for field in quotation_types}
+    values = quotation_manager.validate_fields(data, product=product)
     delivery_date = quotation_manager.validate_fields(
         {"quotation_date": fields.get("delivery_date", "")}
     )["quotation_date"]
@@ -117,7 +125,7 @@ def validate_order(fields, allow_quotation_id):
     if supplier_id == intermediary_id:
         raise ValueError("Supplier and intermediary must differ")
     return (
-        supplier_id, intermediary_id, values, source, delivery_date,
+        product, supplier_id, intermediary_id, values, source, delivery_date,
         json.dumps(pricing, ensure_ascii=False, allow_nan=False),
         json.dumps(result, ensure_ascii=False, allow_nan=False),
         result["inputs"]["quantity_tons"], result["inputs"]["supplier_quote_usd_per_ton"],
@@ -127,7 +135,7 @@ def validate_order(fields, allow_quotation_id):
 
 def create_order(user_id, fields):
     values = validate_order(fields, allow_quotation_id=True)
-    if values[0] is None or not db_manager.supplier_belongs_to_user(user_id, values[0]):
+    if values[1] is None or not db_manager.supplier_belongs_to_user(user_id, values[1]):
         raise ValueError("Supplier is required")
     raw_id = fields.get("quotation_id", "")
     if raw_id:
@@ -137,7 +145,7 @@ def create_order(user_id, fields):
     else:
         quotation_id = None
     return db_manager.create_order(
-        user_id, values[0], values[1], quotation_id, *values[2:]
+        user_id, values[0], values[1], values[2], quotation_id, *values[3:]
     )
 
 
@@ -146,16 +154,16 @@ def update_order(user_id, order_id, fields):
     owned_orders = db_manager.list_orders(user_id, order_id)
     if not owned_orders:
         return {"updated": 0, "purchase_contract_deleted": 0}
-    if values[0] is not None and not db_manager.supplier_belongs_to_user(
-        user_id, values[0]
-    ):
-        raise ValueError("Supplier is required")
     if values[1] is not None and not db_manager.supplier_belongs_to_user(
         user_id, values[1]
     ):
+        raise ValueError("Supplier is required")
+    if values[2] is not None and not db_manager.supplier_belongs_to_user(
+        user_id, values[2]
+    ):
         raise ValueError("Intermediary is invalid")
-    if values[0] is None:
-        values = (owned_orders[0].get("supplier_id"), *values[1:])
     if values[1] is None:
-        values = (values[0], owned_orders[0].get("intermediary_id"), *values[2:])
+        values = (values[0], owned_orders[0].get("supplier_id"), *values[2:])
+    if values[2] is None:
+        values = (values[0], values[1], owned_orders[0].get("intermediary_id"), *values[3:])
     return db_manager.update_order(user_id, order_id, *values)

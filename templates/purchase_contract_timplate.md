@@ -11,13 +11,13 @@ Add:	{buyer_address}
 
 The buyer hereby confirmed having bought from the seller the following goods on terms and conditions as specified below:
 
-1)	Commodity:	AFRICAN RAW COTTON,
+1)	Commodity:	AFRICAN RAW {product},
     {crop_year} Crop, Grade: SM, Staple: {staple_length}mm, MIC:{mic}, Strength: {strength}GPT MIN.
 2)	Quantity:	 {quantity} metric tons
     5% more or less in seller's option at contract price.
 3)	Packing:	In BALES
 4)	Shipment:	Loading before {shipment_date}
-5)	Unit Price:	{unit_price} USC/LB
+5)	Unit Price:	{unit_price} {unit_price_currency}
 6)	Price Term:  {price_term} Qingdao, China.
 7)	Insurance:   Insurance shall be covered by SELLER.
 8)	Payment:	 100% T/T after goods arrive.

@@ -195,6 +195,11 @@ test("quotation table displays uploaded dates and leaves missing dates blank", a
 		assert.equal(elements.get("cotton-quotation-panel").hidden, false);
 		const table = container.children[1].children[0];
 		assert.equal(table.children[0].children[0].children[1].textContent, label);
+		assert.ok(
+			table.children[0].children[0].children.some(
+				(header) => header.textContent === translations[locale]["market.cotton_column.crop_year"],
+			),
+		);
 		const rows = table.children[1].children;
 		assert.equal(rows[0].children[0].textContent, translations[locale]["quotation.yes"]);
 		assert.equal(rows[1].children[0].textContent, translations[locale]["quotation.no"]);

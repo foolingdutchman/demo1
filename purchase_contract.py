@@ -69,6 +69,18 @@ def build_contract_context(order, username, profile=None, party_role="direct"):
     profile = profile or {}
     quantity = _decimal(order.get("quantity_tons"))
     price_usd_per_ton = _decimal(order.get("supplier_price_usd_per_ton"))
+    product_type = (
+        order.get("product_type")
+        or order.get("source_quotation_product")
+        or "cotton"
+    )
+    product = {
+        "cotton": "COTTON",
+        "sesame": "SESAME",
+        "peanut": "PEANUT",
+        "peanut_meal": "PEANUT MEAL",
+    }.get(product_type, _text(order.get("product")).upper())
+    is_cotton = product_type == "cotton"
     quotation_date = _text(order.get("quotation_date"), default="")
     created_at = _text(order.get("created_at"), default="")
     user_company = profile.get("company_name") or username
@@ -98,13 +110,19 @@ def build_contract_context(order, username, profile=None, party_role="direct"):
         "seller_address": _text(seller_address),
         "buyer": _text(buyer),
         "buyer_address": _text(buyer_address),
+        "product": product,
         "crop_year": quotation_date[:4] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", quotation_date) else "—",
         "staple_length": _number(order.get("length_mm")),
         "mic": _number(order.get("micronaire")),
         "strength": _number(order.get("strength_min"), default=_number(order.get("strength_average"))),
         "quantity": _number(quantity, 3),
         "shipment_date": _text(order.get("delivery_date")),
-        "unit_price": _number(price_usd_per_ton / USD_PER_TON_PER_USC_LB, 2),
+        "unit_price": _number(
+            price_usd_per_ton / USD_PER_TON_PER_USC_LB
+            if is_cotton else price_usd_per_ton,
+            2,
+        ),
+        "unit_price_currency": "USC/LB" if is_cotton else "USD/MT",
         "price_term": _text(order.get("supplier_quote_basis"), default="CIF"),
         "amount": f"{quantity * price_usd_per_ton:,.2f}",
     }

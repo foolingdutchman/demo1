@@ -49,6 +49,15 @@ function uscToUsdPerTon(value) {
 function usdPerTonToUsc(value) {
 	return value === "" || value == null ? "" : String(Number((Number(value) / USD_PER_TON_PER_USC_LB).toPrecision(12)));
 }
+function supplierPriceToDisplay(value, product) {
+	return product === "cotton" ? usdPerTonToUsc(value) : value ?? "";
+}
+function supplierPriceToUsdPerTon(value, product) {
+	return product === "cotton" ? uscToUsdPerTon(value) : value;
+}
+function supplierPriceLabel(product) {
+	return product === "cotton" ? "order.price_required" : "order.price_required_usd";
+}
 function sudanPricingFields() {
 	const fields = Object.fromEntries(
 		[...document.querySelectorAll("[data-sudan-field]")].map((field) => [
@@ -90,6 +99,8 @@ const COTTON_QUOTATION_TABLES = [
 			"quotation_date",
 			"image_label",
 			"batch_number",
+			"product",
+			"crop_year",
 			"processor",
 			"origin",
 			"package_count",
@@ -114,6 +125,48 @@ const COTTON_QUOTATION_TABLES = [
 		],
 	},
 ];
+const PRODUCT_QUOTATION_TABLES = [
+	{
+		key: "quotation_summary",
+		title: "trade.cotton",
+		columns: COTTON_QUOTATION_TABLES[0].columns,
+	},
+	{
+		key: "sesame",
+		title: "trade.sesame",
+		columns: [
+			"batch_number", "product", "processor", "crop_year", "origin",
+			"package_count", "gross_weight_tons", "tare_weight_kg",
+			"net_weight_tons", "oil_percent", "ffa_percent", "purity_percent",
+			"admixture_percent", "moisture_percent", "price_usc_per_mt",
+			"red_note", "quotation_date", "source_filename", "source_sheet_name",
+		],
+	},
+	{
+		key: "peanut",
+		title: "trade.peanut",
+		columns: [
+			"batch_number", "product", "processor", "crop_year", "origin",
+			"package_count", "gross_weight_tons", "tare_weight_kg",
+			"net_weight_tons", "oil_percent", "size_per_oz", "split_percent",
+			"ffa_percent", "purity_percent", "admixture_percent",
+			"moisture_percent", "aflatoxin_ppb", "price_usc_per_mt",
+			"red_note", "quotation_date", "source_filename", "source_sheet_name",
+		],
+	},
+	{
+		key: "peanut_meal",
+		title: "trade.peanut_meal",
+		columns: [
+			"batch_number", "product", "processor", "crop_year", "origin",
+			"package_count", "gross_weight_tons", "tare_weight_kg",
+			"net_weight_tons", "oil_percent", "protein_percent",
+			"fiber_percent", "ffa_percent", "admixture_percent",
+			"moisture_percent", "aflatoxin_ppb", "price_usc_per_mt",
+			"red_note", "quotation_date", "source_filename", "source_sheet_name",
+		],
+	},
+];
 
 async function initMarketBoard() {
 	const refreshButton = document.getElementById("market-refresh");
@@ -123,7 +176,12 @@ async function initMarketBoard() {
 
 async function initMarketDetailPage() {
 	const query = new URLSearchParams(location.search);
-	const asset = query.get("asset");
+	const product = query.get("product");
+	const asset = (location.pathname || "").replace(/\/+$/, "") === "/product/cotton"
+		|| product === "cotton"
+		? "zce_cotton"
+		: query.get("asset");
+	const productKeys = ["sesame", "peanut", "peanut_meal"];
 	const assets = [
 		"gold",
 		"btc",
@@ -138,6 +196,21 @@ async function initMarketDetailPage() {
 	const returnPage = query.get("return") === "assets" ? "assets.html" : "index.html";
 	document.getElementById("market-detail-back").href = returnPage;
 	document.getElementById("market-detail-brand").href = "assets.html";
+	if (productKeys.includes(product)) {
+		const productName = App.t(`trade.${product}`);
+		document.title = `${productName} - ${App.t("site.title")}`;
+		document.getElementById("market-detail-title").textContent = productName;
+		document.getElementById("market-current-price").parentElement.hidden = true;
+		document.getElementById("market-history-summary").hidden = true;
+		document.getElementById("market-history-panel").hidden = true;
+		document.getElementById("cotton-quotation-heading").textContent = productName;
+		document.getElementById("sudan-book-order").addEventListener("click", () => {
+			window.location.href = `/book_order.html?product=${encodeURIComponent(product)}`;
+		});
+		document.getElementById("product-order-list").href = "/order.html";
+		loadProductQuotations(product);
+		return;
+	}
 	if (!assets.includes(asset)) {
 		document.getElementById("market-history-latest").textContent = App.t(
 			"market.unavailable_short",
@@ -238,8 +311,15 @@ async function initMarketDetailPage() {
 }
 
 async function loadCottonQuotations() {
+	return loadProductQuotations("cotton");
+}
+
+async function loadProductQuotations(product = "cotton") {
 	const status = document.getElementById("cotton-quotation-status");
 	const container = document.getElementById("cotton-quotation-tables");
+	const sheet = product === "cotton"
+		? COTTON_QUOTATION_TABLES[0]
+		: PRODUCT_QUOTATION_TABLES.find(({ key }) => key === product);
 	container.replaceChildren();
 	status.textContent = "";
 	try {
@@ -247,19 +327,14 @@ async function loadCottonQuotations() {
 		if (!session.authenticated) return;
 		document.getElementById("cotton-quotation-panel").hidden = false;
 		const result = await App.api("/api/cotton-quotations");
-		if (!result.sheets || COTTON_QUOTATION_TABLES.some(
-			({ key }) => !Array.isArray(result.sheets[key]),
-		)) {
+		if (!sheet || !result.sheets || !Array.isArray(result.sheets[sheet.key])) {
 			throw new Error(App.t("market.cotton_data_unavailable"));
 		}
 		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
 			maximumFractionDigits: 3,
 		});
-		let hasRecords = false;
-		for (const sheet of COTTON_QUOTATION_TABLES) {
-			const records = result.sheets[sheet.key].slice(0, 5);
-			if (records.length === 0) continue;
-			hasRecords = true;
+		const records = result.sheets[sheet.key].slice(0, 5);
+		if (records.length > 0) {
 			const heading = document.createElement("h3");
 			heading.textContent = App.t(sheet.title);
 			container.append(heading);
@@ -271,8 +346,7 @@ async function loadCottonQuotations() {
 				return typeof value === "number" ? formatter.format(value) : value ?? "";
 			})]);
 			appendTable(container, headers, rows);
-		}
-		if (!hasRecords) {
+		} else {
 			status.textContent = App.t("market.cotton_data_empty");
 		}
 	} catch (error) {
@@ -365,6 +439,7 @@ function initSudanCottonPricing() {
 		try {
 			sessionStorage.setItem("orderDraft", JSON.stringify({
 				pricing, benchmarkSource: document.getElementById("sudan-benchmark-source").value,
+				product: "cotton",
 			}));
 			window.location.href = "book_order.html";
 		} catch (error) {
@@ -921,7 +996,7 @@ async function initLoginPage() {
 				}),
 			});
 			const next = query.get("next") || "assets.html";
-			const safeNext = /^(assets\.html|list\.html|quotations\.html|book_order\.html|order\.html|(?:detail|order_detail)\.html\?id=\d+)$/.test(next)
+			const safeNext = /^(assets\.html|list\.html|quotations\.html|book_order\.html(?:\?product=(?:cotton|sesame|peanut|peanut_meal))?|order\.html|(?:detail|order_detail)\.html\?id=\d+)$/.test(next)
 				? next
 				: "assets.html";
 			window.location.href = safeNext;
@@ -935,22 +1010,135 @@ async function initLoginPage() {
 async function initAssetsPage() {
 	if (!await initAuthenticatedPage("assets.html")) return;
 	initMarketBoard();
+	await Promise.all([loadAssetOrders(), loadAssetWaybills()]);
+}
 
-	document.getElementById("upload-form").addEventListener("submit", async (event) => {
-		event.preventDefault();
-		App.setNotice("");
-		const file = document.getElementById("upload-file").files[0];
-		if (!file) return;
-		const formData = new FormData();
-		formData.append("file", file);
-		try {
-			const result = await App.api("/api/uploads", { method: "POST", body: formData });
-			window.location.href = `detail.html?id=${result.upload.id}`;
-		} catch (error) {
-			handleUnauthorized(error, "assets.html");
+function appendAssetTable(container, labels, records, cells) {
+	container.replaceChildren();
+	if (!records.length) {
+		const empty = document.createElement("p");
+		empty.className = "empty";
+		empty.textContent = App.t(container.dataset.emptyKey);
+		container.append(empty);
+		return;
+	}
+	const wrapper = document.createElement("div");
+	wrapper.className = "table-wrap";
+	const table = document.createElement("table");
+	const head = document.createElement("thead");
+	const headerRow = document.createElement("tr");
+	for (const label of labels) {
+		const cell = document.createElement("th");
+		cell.textContent = label;
+		headerRow.append(cell);
+	}
+	head.append(headerRow);
+	const body = document.createElement("tbody");
+	for (const record of records) {
+		const row = document.createElement("tr");
+		for (const value of cells(record)) {
+			const cell = document.createElement("td");
+			if (value && typeof value === "object") cell.append(value);
+			else cell.textContent = value ?? "";
+			row.append(cell);
 		}
-	});
-	await loadUploadList(5, "assets.html");
+		body.append(row);
+	}
+	table.append(head, body);
+	wrapper.append(table);
+	container.append(wrapper);
+}
+
+async function loadAssetOrders() {
+	const container = document.getElementById("assets-orders-list");
+	container.dataset.emptyKey = "order.list_empty";
+	try {
+		const data = await App.api("/api/orders");
+		if (!Array.isArray(data.orders)) throw new Error(App.t("order.list_invalid"));
+		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+			maximumFractionDigits: 2,
+		});
+		appendAssetTable(
+			container,
+			[
+				App.t("order.number_heading"),
+				App.t("order.created_at"),
+				App.t("order.batch"),
+				App.t("market.cotton_column.product"),
+				App.t("market.cotton_column.origin"),
+				App.t("order.quantity"),
+				App.t("order.price"),
+				App.t("site.actions"),
+			],
+			data.orders,
+			(order) => {
+				const link = document.createElement("a");
+				link.href = `order_detail.html?id=${encodeURIComponent(order.id)}`;
+				link.textContent = App.t("order.view_detail");
+				return [
+					App.t("order.number", { id: order.id }),
+					order.created_at,
+					order.batch_number,
+					order.product,
+					order.origin,
+					`${order.quantity_tons ?? ""} t`,
+					`${formatter.format(Number(
+						supplierPriceToDisplay(
+							order.supplier_price_usd_per_ton,
+							order.product_type || order.source_quotation_product,
+						),
+					))} ${(order.product_type || order.source_quotation_product) === "cotton" ? "USC/lb" : "USD/Mt"} ${order.supplier_quote_basis || ""}`,
+					link,
+				];
+			},
+		);
+	} catch (error) {
+		handleUnauthorized(error, "assets.html");
+	}
+}
+
+async function loadAssetWaybills() {
+	const container = document.getElementById("assets-waybills-list");
+	container.dataset.emptyKey = "waybill.list_empty";
+	try {
+		const data = await App.api("/api/waybills");
+		if (!Array.isArray(data.waybills)) throw new Error(App.t("waybill.list_invalid"));
+		appendAssetTable(
+			container,
+			[
+				App.t("order.number_heading"),
+				App.t("market.cotton_column.product"),
+				App.t("market.cotton_column.origin"),
+				App.t("waybill.bl_number"),
+				App.t("waybill.bl_net_weight"),
+				App.t("waybill.weight_unit"),
+				App.t("waybill.departure_date"),
+				App.t("waybill.arrival_date"),
+				App.t("waybill.voyage_number"),
+				App.t("site.actions"),
+			],
+			data.waybills,
+			(waybill) => {
+				const link = document.createElement("a");
+				link.href = `order_docs.html?id=${encodeURIComponent(waybill.order_id)}`;
+				link.textContent = App.t("order.view_detail");
+				return [
+					App.t("order.number", { id: waybill.order_id }),
+					waybill.product,
+					waybill.origin,
+					waybill.BL_NUMBER,
+					waybill.BL_NET_WEIGHT,
+					waybill.WEIGHT_UNIT,
+					waybill.DEPARTURE_DATE,
+					waybill.ARRIVAL_DATE,
+					waybill.VOYAGE_NUMBER,
+					link,
+				];
+			},
+		);
+	} catch (error) {
+		handleUnauthorized(error, "assets.html");
+	}
 }
 
 async function initListPage() {
@@ -995,64 +1183,83 @@ async function initQuotationsPage() {
 
 	async function load() {
 		const result = await App.api("/api/cotton-quotations");
-		const records = result.sheets?.quotation_summary;
-		if (!Array.isArray(records)) throw new Error(App.t("market.cotton_data_unavailable"));
+		if (!result.sheets || !Array.isArray(result.sheets.quotation_summary)) {
+			throw new Error(App.t("market.cotton_data_unavailable"));
+		}
+		const sheets = Object.fromEntries(PRODUCT_QUOTATION_TABLES.map(
+			({ key }) => [key, Array.isArray(result.sheets[key]) ? result.sheets[key] : []],
+		));
 		const container = document.getElementById("quotation-list");
 		container.replaceChildren();
 		editButtons = [];
-		if (!records.length) {
+		const populatedSheets = PRODUCT_QUOTATION_TABLES.filter(
+			({ key }) => sheets[key].length,
+		);
+		if (!populatedSheets.length) {
 			const empty = document.createElement("p");
 			empty.className = "empty";
 			empty.textContent = App.t("market.cotton_data_empty");
 			container.append(empty);
 			return;
 		}
-		const wrapper = document.createElement("div");
-		wrapper.className = "table-wrap";
-		const table = document.createElement("table");
-		const head = document.createElement("thead");
-		const headerRow = document.createElement("tr");
-		for (const label of [
-			App.t("site.actions"),
-			App.t("quotation.ordered"),
-			...COTTON_QUOTATION_TABLES[0].columns.map((column) =>
-				App.t(`market.cotton_column.${column}`)),
-		]) {
-			const th = document.createElement("th");
-			th.textContent = label;
-			headerRow.append(th);
-		}
-		head.append(headerRow);
-		const body = document.createElement("tbody");
-		const formatter = new Intl.NumberFormat(document.documentElement.lang, { maximumFractionDigits: 3 });
-		for (const record of records) {
-			const row = document.createElement("tr");
-			const action = document.createElement("td");
-			if (record.editable) {
-				const button = document.createElement("button");
-				button.type = "button";
-				button.textContent = App.t("quotation.edit");
-				button.addEventListener("click", () => edit(record));
-				editButtons.push(button);
-				action.append(button);
-			} else {
-				action.textContent = App.t("quotation.read_only");
+		const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+			maximumFractionDigits: 3,
+		});
+		for (const sheet of PRODUCT_QUOTATION_TABLES) {
+			const records = sheets[sheet.key];
+			if (!records.length) continue;
+			if (populatedSheets.length > 1) {
+				const heading = document.createElement("h2");
+				heading.textContent = App.t(sheet.title);
+				container.append(heading);
 			}
-			row.append(action);
-			const ordered = document.createElement("td");
-			ordered.textContent = App.t(record.ordered ? "quotation.yes" : "quotation.no");
-			row.append(ordered);
-			for (const column of COTTON_QUOTATION_TABLES[0].columns) {
-				const cell = document.createElement("td");
-				const value = record[column];
-				cell.textContent = typeof value === "number" ? formatter.format(value) : value ?? "";
-				row.append(cell);
+			const wrapper = document.createElement("div");
+			wrapper.className = "table-wrap";
+			const table = document.createElement("table");
+			const head = document.createElement("thead");
+			const headerRow = document.createElement("tr");
+			for (const label of [
+				App.t("site.actions"),
+				App.t("quotation.ordered"),
+				...sheet.columns.map((column) =>
+					App.t(`market.cotton_column.${column}`)),
+			]) {
+				const th = document.createElement("th");
+				th.textContent = label;
+				headerRow.append(th);
 			}
-			body.append(row);
+			head.append(headerRow);
+			const body = document.createElement("tbody");
+			for (const record of records) {
+				const row = document.createElement("tr");
+				const action = document.createElement("td");
+				if (record.editable) {
+					const button = document.createElement("button");
+					button.type = "button";
+					button.textContent = App.t("quotation.edit");
+					button.addEventListener("click", () => edit(record));
+					editButtons.push(button);
+					action.append(button);
+				} else {
+					action.textContent = App.t("quotation.read_only");
+				}
+				row.append(action);
+				const ordered = document.createElement("td");
+				ordered.textContent = App.t(record.ordered ? "quotation.yes" : "quotation.no");
+				row.append(ordered);
+				for (const column of sheet.columns) {
+					const cell = document.createElement("td");
+					const value = record[column];
+					cell.textContent = typeof value === "number"
+						? formatter.format(value) : value ?? "";
+					row.append(cell);
+				}
+				body.append(row);
+			}
+			table.append(head, body);
+			wrapper.append(table);
+			container.append(wrapper);
 		}
-		table.append(head, body);
-		wrapper.append(table);
-		container.append(wrapper);
 	}
 
 	cancelButton.addEventListener("click", () => {
@@ -1513,7 +1720,7 @@ function renderCottonQuotationImport(importResult) {
 		status.textContent = App.t("analysis.cotton_import_empty");
 	}
 	const link = document.createElement("a");
-	link.href = "financial_assets_marketing_detail.html?asset=zce_cotton&return=assets";
+	link.href = "/product/cotton?return=assets";
 	link.textContent = App.t("analysis.cotton_view");
 	container.prepend(status, link);
 }

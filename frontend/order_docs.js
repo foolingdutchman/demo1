@@ -16,6 +16,10 @@ const WAYBILL_FIELDS = [
 	["COO_INOVICE_NUMBER", "waybill.coo_inovice_number"],
 	["COO_INVOICE_DATE", "waybill.coo_invoice_date"],
 ];
+const WAYBILL_METADATA_FIELDS = [
+	["product", "market.cotton_column.product"],
+	["origin", "market.cotton_column.origin"],
+];
 
 async function initOrderDocumentsPage() {
 	const idText = new URLSearchParams(location.search).get("id") || "";
@@ -394,7 +398,10 @@ async function initOrderDocumentsPage() {
 				table.className = "waybill-table";
 				const thead = document.createElement("thead");
 				const headerRow = document.createElement("tr");
-				for (const [_field, labelKey] of WAYBILL_FIELDS) {
+				for (const [_field, labelKey] of [
+					...WAYBILL_METADATA_FIELDS,
+					...WAYBILL_FIELDS,
+				]) {
 					const th = document.createElement("th");
 					th.textContent = App.t(labelKey);
 					headerRow.append(th);
@@ -410,7 +417,10 @@ async function initOrderDocumentsPage() {
 
 				function renderRow() {
 					displayRow.replaceChildren();
-					for (const [field] of WAYBILL_FIELDS) {
+					for (const [field] of [
+						...WAYBILL_METADATA_FIELDS,
+						...WAYBILL_FIELDS,
+					]) {
 						const cell = document.createElement("td");
 						cell.textContent = waybill[field] || "—";
 						displayRow.append(cell);
@@ -427,6 +437,11 @@ async function initOrderDocumentsPage() {
 				function renderEditRow() {
 					displayRow.replaceChildren();
 					inputs.clear();
+					for (const [field] of WAYBILL_METADATA_FIELDS) {
+						const td = document.createElement("td");
+						td.textContent = waybill[field] || "—";
+						displayRow.append(td);
+					}
 					for (const [field, labelKey] of WAYBILL_FIELDS) {
 						const td = document.createElement("td");
 						const input = document.createElement("input");

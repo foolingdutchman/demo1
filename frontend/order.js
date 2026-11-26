@@ -50,8 +50,13 @@ async function initOrdersPage() {
 			link.href = `order_detail.html?id=${encodeURIComponent(order.id)}`;
 			link.textContent = [
 				App.t("order.number", { id: order.id }), order.created_at,
-				order.batch_number, `${order.quantity_tons} t`,
-				`${formatter.format(Number(order.supplier_price_usd_per_ton) / USD_PER_TON_PER_USC_LB)} USC/lb ${order.supplier_quote_basis}`,
+				order.product, order.origin, order.batch_number, `${order.quantity_tons} t`,
+				`${formatter.format(Number(
+					supplierPriceToDisplay(
+						order.supplier_price_usd_per_ton,
+						order.product_type || order.source_quotation_product,
+					),
+				))} ${(order.product_type || order.source_quotation_product) === "cotton" ? "USC/lb" : "USD/Mt"} ${order.supplier_quote_basis}`,
 			].filter(Boolean).join(" · ");
 			const button = document.createElement("button");
 			button.type = "button";
@@ -85,7 +90,20 @@ async function initOrdersPage() {
 }
 
 async function initBookOrderPage() {
-	if (!await initAuthenticatedPage("book_order.html")) return;
+	const allowedProducts = ["cotton", "sesame", "peanut", "peanut_meal"];
+	const locationSearch = typeof location !== "undefined"
+		? location.search
+		: typeof window !== "undefined" && window.location
+		? window.location.search
+		: "";
+	const queryParts = String(locationSearch || "").split(/[?&]/);
+	const selectedProduct = allowedProducts.find(
+		(product) => queryParts.includes(`product=${product}`),
+	) || "";
+	const authenticatedNext = selectedProduct
+		? `book_order.html?product=${selectedProduct}`
+		: "book_order.html";
+	if (!await initAuthenticatedPage(authenticatedNext)) return;
 	document.title = `${App.t("order.title")} - ${App.t("site.title")}`;
 	const form = document.getElementById("order-form");
 	const result = document.getElementById("order-pricing-result");
@@ -95,19 +113,34 @@ async function initBookOrderPage() {
 	const intermediarySelect = document.getElementById("order-intermediary");
 	const quoteHint = document.getElementById("order-quotation-hint");
 	const deliveryDate = document.getElementById("order-delivery-date");
+	const productSelect = document.getElementById("order-product");
+	const backLink = document.getElementById("order-back");
 	const pricingInputs = new Map();
 	const quotationInputs = new Map();
+	let supplierPriceProduct = productSelect.value;
+	let supplierPriceLabelElement = null;
 	let pricingRequest = 0;
 	let quotations = [];
+	let quotationSheets = {};
 	let suppliers = [];
 	let draft;
 	try {
 		draft = JSON.parse(sessionStorage.getItem("orderDraft") || "{}");
+		if (selectedProduct && draft.product !== selectedProduct) {
+			draft = { product: selectedProduct };
+		}
 	} catch (error) {
 		App.setNotice(App.t("order.draft_failed"));
 		return;
 	}
 	deliveryDate.value = draft.deliveryDate || "";
+	const cameFromCotton = /\/product\/cotton(?:[/?#]|$)/.test(document.referrer || "");
+	productSelect.value = draft.product || (cameFromCotton ? "cotton" : "");
+	backLink.addEventListener("click", (event) => {
+		event.preventDefault();
+		if (window.history?.length > 1) window.history.back();
+		else window.location.href = "assets.html";
+	});
 
 	function addField(container, labelKey, control) {
 		const label = document.createElement("label");
@@ -115,6 +148,7 @@ async function initBookOrderPage() {
 		title.textContent = App.t(labelKey);
 		label.append(title, control);
 		container.append(label);
+		return title;
 	}
 	function makeSelect(options) {
 		const control = document.createElement("select");
@@ -148,20 +182,58 @@ async function initBookOrderPage() {
 			input.required = name !== "direct_buyer_bid_cny_per_ton";
 		}
 		const value = draft.pricing?.[name] ?? SUDAN_COTTON_DEFAULTS[name];
-		input.value = name === "supplier_quote_usd_per_ton" ? usdPerTonToUsc(value) : value;
+		input.value = name === "supplier_quote_usd_per_ton"
+			? supplierPriceToDisplay(value, productSelect.value)
+			: value;
 		pricingInputs.set(name, input);
 		if (visiblePricingFields.has(name)) {
-			addField(document.getElementById("order-pricing-fields"), label, input);
+			const fieldLabel = addField(
+				document.getElementById("order-pricing-fields"),
+				name === "supplier_quote_usd_per_ton"
+					? supplierPriceLabel(productSelect.value)
+					: label,
+				input,
+			);
+			if (name === "supplier_quote_usd_per_ton") {
+				supplierPriceLabelElement = fieldLabel;
+			}
 		}
 	}
-	for (const name of COTTON_QUOTATION_TABLES[0].columns) {
-		const input = document.createElement("input");
-		input.type = name === "quotation_date" ? "date" : "text";
-		input.required = name === "quotation_date";
-		input.value = draft.quotation?.[name] ?? "";
-		quotationInputs.set(name, input);
-		addField(document.getElementById("order-quotation-fields"), `market.cotton_column.${name}`, input);
+	function productConfig() {
+		const key = productSelect.value === "cotton"
+			? "quotation_summary"
+			: productSelect.value;
+		return PRODUCT_QUOTATION_TABLES.find((item) => item.key === key);
 	}
+	function renderQuotationFields() {
+		const container = document.getElementById("order-quotation-fields");
+		const config = productConfig();
+		quotationInputs.clear();
+		container.replaceChildren();
+		if (!config) return;
+		for (const name of config.columns) {
+			const input = document.createElement("input");
+			input.type = name === "quotation_date" ? "date" : "text";
+			input.required = name === "quotation_date";
+			input.value = draft.quotation?.[name] ?? "";
+			quotationInputs.set(name, input);
+			addField(container, `market.cotton_column.${name}`, input);
+			input.addEventListener("input", rememberDraft);
+		}
+		const productInput = quotationInputs.get("product");
+		const netWeightInput = quotationInputs.get("net_weight_tons");
+		if (productInput) productInput.readOnly = true;
+		if (netWeightInput) netWeightInput.readOnly = true;
+		syncProductName();
+	}
+	function syncProductName() {
+		const option = [...productSelect.children].find(
+			(item) => item.value === productSelect.value,
+		);
+		const productInput = quotationInputs.get("product");
+		if (productInput) productInput.value = option?.textContent || "";
+	}
+	renderQuotationFields();
 	const manual = document.createElement("option");
 	manual.value = "";
 	manual.textContent = App.t("order.manual_quote");
@@ -177,8 +249,12 @@ async function initBookOrderPage() {
 
 	function currentDraft() {
 		const pricing = Object.fromEntries([...pricingInputs].map(([key, input]) => [key, input.value]));
-		pricing.supplier_quote_usd_per_ton = uscToUsdPerTon(pricing.supplier_quote_usd_per_ton);
+		pricing.supplier_quote_usd_per_ton = supplierPriceToUsdPerTon(
+			pricing.supplier_quote_usd_per_ton,
+			productSelect.value,
+		);
 		return {
+			product: productSelect.value,
 			pricing,
 			quotation: Object.fromEntries([...quotationInputs].map(([key, input]) => [key, input.value])),
 			benchmarkSource: source.value,
@@ -188,7 +264,48 @@ async function initBookOrderPage() {
 			deliveryDate: deliveryDate.value,
 		};
 	}
-	function syncQuote(selected, clearManual = false, resetQuantity = false, preserveDate = false) {
+	async function ensureCottonFx() {
+		const fxInput = pricingInputs.get("fx_cny_per_usd");
+		if (Number(fxInput.value) > 0) return Number(fxInput.value);
+		const result = await App.api("/api/market-prices");
+		const fx = result && result.prices && Number(result.prices.usd_cny);
+		if (!Number.isFinite(fx) || fx <= 0) return null;
+		fxInput.value = String(fx);
+		return fx;
+	}
+	async function syncSupplierQuotePrice(selected) {
+		const input = pricingInputs.get("supplier_quote_usd_per_ton");
+		if (!selected) {
+			input.value = "";
+			return;
+		}
+		if (productSelect.value !== "cotton") {
+			const price = Number(selected.price_usc_per_mt);
+			if (Number.isFinite(price) && price >= 0) input.value = String(price);
+			return;
+		}
+		const quoteCnyPerTon = Number(selected.gross_price_cny_per_ton);
+		if (!Number.isFinite(quoteCnyPerTon) || quoteCnyPerTon <= 0) return;
+		try {
+			const existingFx = Number(pricingInputs.get("fx_cny_per_usd").value);
+			const fx = existingFx > 0 ? existingFx : await ensureCottonFx();
+			if (!fx) return;
+			input.value = supplierPriceToDisplay(
+				quoteCnyPerTon / fx,
+				"cotton",
+			);
+			rememberDraft();
+		} catch (error) {
+			App.setNotice(error.message || App.t("market.unavailable"));
+		}
+	}
+	function syncQuote(
+		selected,
+		clearManual = false,
+		resetQuantity = false,
+		preserveDate = false,
+		preserveSupplierPrice = false,
+	) {
 		const quantity = pricingInputs.get("quantity_tons");
 		for (const [name, input] of quotationInputs) {
 			input.readOnly = Boolean(selected) && !(name === "quotation_date" && !selected.quotation_date);
@@ -200,10 +317,12 @@ async function initBookOrderPage() {
 		quantity.readOnly = Boolean(weight);
 		if (weight) quantity.value = String(weight);
 		else if (selected && resetQuantity) quantity.value = "";
-		if (!selected) quotationInputs.get("net_weight_tons").value = quantity.value;
+		const netWeight = quotationInputs.get("net_weight_tons");
+		if (!selected && netWeight) netWeight.value = quantity.value;
 		quoteHint.textContent = App.t(selected ? (weight ? "order.quote_weight_locked" : "order.quote_weight_missing") : "order.manual_weight");
 		++pricingRequest;
 		result.textContent = "";
+		if (!preserveSupplierPrice) syncSupplierQuotePrice(selected);
 	}
 	function rememberDraft() {
 		try {
@@ -239,7 +358,8 @@ async function initBookOrderPage() {
 		input.addEventListener("input", () => {
 			if (name === "domestic_benchmark_cny_per_ton") source.value = "manual";
 			if (name === "quantity_tons" && !quoteSelect.value) {
-				quotationInputs.get("net_weight_tons").value = input.value;
+				const netWeight = quotationInputs.get("net_weight_tons");
+				if (netWeight) netWeight.value = input.value;
 			}
 			++pricingRequest;
 			result.textContent = "";
@@ -268,12 +388,50 @@ async function initBookOrderPage() {
 		}
 	});
 	deliveryDate.addEventListener("input", rememberDraft);
-	quotationInputs.get("net_weight_tons").readOnly = true;
-	for (const input of quotationInputs.values()) input.addEventListener("input", rememberDraft);
+	async function renderQuotationOptions(preserveDraft = false) {
+		const config = productConfig();
+		quoteSelect.replaceChildren();
+		quotations = config ? quotationSheets[config.key] || [] : [];
+		const manual = document.createElement("option");
+		manual.value = "";
+		manual.textContent = App.t("order.manual_quote");
+		quoteSelect.append(manual);
+		for (const quote of quotations) {
+			const option = document.createElement("option");
+			option.value = String(quote.row_number);
+			option.disabled = Boolean(quote.ordered);
+			option.textContent = [
+				quote.quotation_date, quote.batch_number, quote.processor, quote.origin,
+			].filter(Boolean).join(" · ") || `#${quote.row_number}`;
+			if (quote.ordered) option.textContent += ` · ${App.t("quotation.ordered")}`;
+			quoteSelect.append(option);
+		}
+		quoteSelect.value = "";
+		save.disabled = false;
+		syncQuote(null, !preserveDraft, true, false, preserveDraft);
+	}
+	productSelect.addEventListener("change", () => {
+		const supplierPrice = pricingInputs.get("supplier_quote_usd_per_ton");
+		const storedPrice = supplierPriceToUsdPerTon(
+			supplierPrice.value,
+			supplierPriceProduct,
+		);
+		renderQuotationFields();
+		supplierPrice.value = supplierPriceToDisplay(storedPrice, productSelect.value);
+		if (supplierPriceLabelElement) {
+			supplierPriceLabelElement.textContent = App.t(
+				supplierPriceLabel(productSelect.value),
+			);
+		}
+		supplierPriceProduct = productSelect.value;
+		renderQuotationOptions();
+		rememberDraft();
+	});
 	quoteSelect.addEventListener("change", () => {
 		const selected = quotations.find((row) => String(row.row_number) === quoteSelect.value);
 		syncQuote(selected, !selected, true);
-		quotationInputs.get("net_weight_tons").readOnly = true;
+		const netWeight = quotationInputs.get("net_weight_tons");
+		if (netWeight) netWeight.readOnly = true;
 		save.disabled = Boolean(selected && selected.ordered);
 		App.setNotice("");
 		rememberDraft();
@@ -300,24 +458,17 @@ async function initBookOrderPage() {
 		const draftIntermediaryId = String(draft.intermediaryId || "");
 		renderIntermediaryOptions(draftIntermediaryId);
 	} catch (error) {
-		if (handleUnauthorized(error, "book_order.html")) return;
+		if (handleUnauthorized(error, authenticatedNext)) return;
 	}
 
 	if (!draft.quotationId) syncQuote(null);
-	quotationInputs.get("net_weight_tons").readOnly = true;
+	const initialNetWeight = quotationInputs.get("net_weight_tons");
+	if (initialNetWeight) initialNetWeight.readOnly = true;
 	try {
 		const data = await App.api("/api/cotton-quotations");
-		if (!Array.isArray(data.sheets?.quotation_summary)) throw new Error(App.t("market.cotton_data_unavailable"));
-		quotations = data.sheets.quotation_summary;
-		for (const quote of quotations) {
-			const option = document.createElement("option");
-			option.value = String(quote.row_number);
-			option.disabled = Boolean(quote.ordered);
-			option.textContent = [quote.quotation_date, quote.batch_number, quote.processor, quote.origin]
-				.filter(Boolean).join(" · ") || `#${quote.row_number}`;
-			if (quote.ordered) option.textContent += ` · ${App.t("quotation.ordered")}`;
-			quoteSelect.append(option);
-		}
+		if (!data.sheets) throw new Error(App.t("market.cotton_data_unavailable"));
+		quotationSheets = data.sheets;
+		await renderQuotationOptions(true);
 		const selected = quotations.find((row) => String(row.row_number) === draft.quotationId);
 		if (draft.quotationId && (!selected || selected.ordered)) {
 			save.disabled = true;
@@ -325,10 +476,11 @@ async function initBookOrderPage() {
 		}
 		if (pendingQuote) pendingQuote.remove();
 		quoteSelect.value = draft.quotationId || "";
-		syncQuote(selected, false, false, true);
-		quotationInputs.get("net_weight_tons").readOnly = true;
+		syncQuote(selected, false, false, true, true);
+		const netWeight = quotationInputs.get("net_weight_tons");
+		if (netWeight) netWeight.readOnly = true;
 	} catch (error) {
-		if (handleUnauthorized(error, "book_order.html")) return;
+		if (handleUnauthorized(error, authenticatedNext)) return;
 		if (draft.quotationId) save.disabled = true;
 	}
 
@@ -336,6 +488,11 @@ async function initBookOrderPage() {
 		event.preventDefault();
 		if (!rememberDraft()) return;
 		const data = currentDraft();
+		if (!data.product) {
+			App.setNotice(App.t("order.product_required"));
+			productSelect.focus();
+			return;
+		}
 		if (!data.supplierId || data.supplierId === "__new__") {
 			App.setNotice(App.t("supplier.required"));
 			supplierSelect.focus();
@@ -351,6 +508,7 @@ async function initBookOrderPage() {
 			return;
 		}
 		const fields = {
+			product: data.product,
 			benchmark_source: data.benchmarkSource,
 			supplier_id: data.supplierId,
 			intermediary_id: data.intermediaryId === "__new__"
@@ -388,7 +546,7 @@ async function initBookOrderPage() {
 			}
 			window.location.href = `order_detail.html?id=${encodeURIComponent(response.order.id)}`;
 		} catch (error) {
-			handleUnauthorized(error, "book_order.html");
+			handleUnauthorized(error, authenticatedNext);
 			save.disabled = false;
 			source.disabled = false;
 			deliveryDate.disabled = false;
