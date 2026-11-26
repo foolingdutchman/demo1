@@ -13,6 +13,11 @@ import quotation_manager
 DATABASE_PATH = Path(__file__).with_name("uploads.db")
 COTTON_QUOTATION_PATH = Path(__file__).with_name("quotations.xlsx")
 DatabaseError = sqlite3.Error
+PRODUCT_PRICE_TABLES = {
+    "sesame": "sesame_daily_prices",
+    "peanut": "peanut_daily_prices",
+    "peanut_meal": "peanut_meal_daily_prices",
+}
 
 
 def initialize_database():
@@ -76,11 +81,60 @@ def initialize_database():
                     f"ALTER TABLE uploads ADD COLUMN {column} {definition}"
                 )
         initialize_cotton_quotations(connection)
+        initialize_product_price_tables(connection)
         initialize_orders(connection)
         initialize_order_documents(connection)
         initialize_suppliers(connection)
         initialize_order_related_documents(connection)
         initialize_waybills(connection)
+
+
+def initialize_product_price_tables(connection):
+    for table in PRODUCT_PRICE_TABLES.values():
+        connection.execute(
+            f"""CREATE TABLE IF NOT EXISTS {table} (
+                fetched_date TEXT PRIMARY KEY,
+                quote_date TEXT NOT NULL,
+                price REAL NOT NULL,
+                currency TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+
+
+def get_daily_product_price(product, fetched_date):
+    table = PRODUCT_PRICE_TABLES.get(product)
+    if table is None:
+        raise ValueError("Invalid market product")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection:
+        initialize_product_price_tables(connection)
+        row = connection.execute(
+            f"""SELECT quote_date, price, currency
+                FROM {table}
+                WHERE fetched_date = ?""",
+            (fetched_date,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"date": row[0], "price": row[1], "currency": row[2]}
+
+
+def save_daily_product_price(product, fetched_date, quote_date, price, currency):
+    table = PRODUCT_PRICE_TABLES.get(product)
+    if table is None:
+        raise ValueError("Invalid market product")
+    with closing(sqlite3.connect(DATABASE_PATH)) as connection, connection:
+        initialize_product_price_tables(connection)
+        connection.execute(
+            f"""INSERT INTO {table} (fetched_date, quote_date, price, currency)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(fetched_date) DO UPDATE SET
+                    quote_date = excluded.quote_date,
+                    price = excluded.price,
+                    currency = excluded.currency,
+                    updated_at = CURRENT_TIMESTAMP""",
+            (fetched_date, quote_date, price, currency),
+        )
 
 
 def initialize_orders(connection):

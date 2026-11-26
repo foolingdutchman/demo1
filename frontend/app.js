@@ -171,7 +171,30 @@ const PRODUCT_QUOTATION_TABLES = [
 async function initMarketBoard() {
 	const refreshButton = document.getElementById("market-refresh");
 	refreshButton.addEventListener("click", loadMarketPrices);
+	if (document.body.dataset.page === "public") {
+		initPublicProtectedLinks();
+	}
 	await loadMarketPrices();
+}
+
+function initPublicProtectedLinks() {
+	for (const link of document.querySelectorAll("[data-login-required]")) {
+		link.addEventListener("click", async (event) => {
+			event.preventDefault();
+			const next = link.getAttribute("href") || "assets.html";
+			try {
+				const session = await App.api("/api/session");
+				if (session.authenticated) {
+					window.location.href = next;
+					return;
+				}
+			} catch (error) {
+				App.setNotice(error.message);
+				return;
+			}
+			goToLogin(next);
+		});
+	}
 }
 
 async function initMarketDetailPage() {
@@ -200,7 +223,12 @@ async function initMarketDetailPage() {
 		const productName = App.t(`trade.${product}`);
 		document.title = `${productName} - ${App.t("site.title")}`;
 		document.getElementById("market-detail-title").textContent = productName;
-		document.getElementById("market-current-price").parentElement.hidden = true;
+		const livePriceProducts = ["sesame", "peanut", "peanut_meal"];
+		document.getElementById("market-current-price").parentElement.hidden =
+			!livePriceProducts.includes(product);
+		document.getElementById("market-detail-unit").textContent = App.t(
+			`market.${product}_unit`,
+		);
 		document.getElementById("market-history-summary").hidden = true;
 		document.getElementById("market-history-panel").hidden = true;
 		document.getElementById("cotton-quotation-heading").textContent = productName;
@@ -209,6 +237,9 @@ async function initMarketDetailPage() {
 		});
 		document.getElementById("product-order-list").href = "/order.html";
 		loadProductQuotations(product);
+		if (livePriceProducts.includes(product)) {
+			loadMarketDetailCurrentPrice(product);
+		}
 		return;
 	}
 	if (!assets.includes(asset)) {
@@ -996,7 +1027,7 @@ async function initLoginPage() {
 				}),
 			});
 			const next = query.get("next") || "assets.html";
-			const safeNext = /^(assets\.html|list\.html|quotations\.html|book_order\.html(?:\?product=(?:cotton|sesame|peanut|peanut_meal))?|order\.html|(?:detail|order_detail)\.html\?id=\d+)$/.test(next)
+			const safeNext = /^(?:\/?assets\.html|\/?list\.html|\/?quotations\.html|\/?book_order\.html(?:\?product=(?:cotton|sesame|peanut|peanut_meal))?|\/?order\.html|\/?(?:detail|order_detail)\.html\?id=\d+|\/?financial_assets_marketing_detail\.html\?asset=(?:gold|btc|eth|ice_cotton|zce_cotton|cc_index_3128b|cc_index_2227b|cc_index_2129b|usd_cny)&return=index|\/product\/cotton\?return=index|\/?product\.html\?product=(?:sesame|peanut|peanut_meal)&return=index)$/.test(next)
 				? next
 				: "assets.html";
 			window.location.href = safeNext;

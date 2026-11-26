@@ -1,5 +1,6 @@
 import io
 import json
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from http.cookiejar import CookieJar
@@ -1295,6 +1296,12 @@ Invoice Date: 2026-10-20
                     "</div><div class='nd_block_p'><span>17189</span> 元/吨"
                     "</div></div>"
                 )
+            if url == api_server.outcall_api.SESAME_PRICE_URL:
+                return "11月26日，国产芝麻均价为14118元/吨，较上一工作日价格持平。"
+            if url == api_server.outcall_api.PEANUT_PRICE_URL:
+                return "2026年11月26日，国内花生通货米均价为7,971元/吨。"
+            if url == api_server.outcall_api.PEANUT_MEAL_PRICE_URL:
+                return "11月26日，国内花生粕市场主流参考价格为3,150元/吨。"
             return (
                 "<table><tr data-currency='美元'>"
                 "<td>美元</td><td>666.30</td><td>666.30</td>"
@@ -1335,6 +1342,9 @@ Invoice Date: 2026-10-20
                 "cc_index_2227b": 15360.0,
                 "cc_index_2129b": 17189.0,
                 "usd_cny": 6.6911,
+                "sesame": 14118.0,
+                "peanut": 7971.0,
+                "peanut_meal": 3150.0,
             },
         )
         self.assertEqual(
@@ -1346,6 +1356,9 @@ Invoice Date: 2026-10-20
                 "cc_index_2227b": "CNY",
                 "cc_index_2129b": "CNY",
                 "usd_cny": "CNY",
+                "sesame": "CNY",
+                "peanut": "CNY",
+                "peanut_meal": "CNY",
             },
         )
         self.assertEqual(
@@ -1354,6 +1367,9 @@ Invoice Date: 2026-10-20
                 "cc_index_3128b": "2026-11-20",
                 "cc_index_2227b": "2026-11-20",
                 "cc_index_2129b": "2026-11-20",
+                "sesame": "2026-11-26",
+                "peanut": "2026-11-26",
+                "peanut_meal": "2026-11-26",
             },
         )
         self.assertEqual(
@@ -1368,7 +1384,59 @@ Invoice Date: 2026-10-20
         self.assertIn("updated_at", result)
         self.assertEqual(fetch.call_count, 3)
         fetch_text.assert_called_once()
-        self.assertEqual(fetch_html.call_count, 2)
+        self.assertEqual(fetch_html.call_count, 5)
+
+    def test_parse_baiinfo_sesame_price_with_date(self):
+        result = api_server.outcall_api.parse_sesame_price(
+            "11月26日，芝麻市场价格持稳，国产芝麻均价为14,118元/吨。",
+            today=date(2026, 11, 26),
+        )
+        self.assertEqual(result, {"price": 14118.0, "date": "2026-11-26"})
+
+    def test_parse_baiinfo_peanut_price_with_date(self):
+        result = api_server.outcall_api.parse_peanut_price(
+            "2026年11月26日，国内花生通货米均价为7,971元/吨。",
+            today=date(2026, 11, 26),
+        )
+        self.assertEqual(result, {"price": 7971.0, "date": "2026-11-26"})
+
+    def test_parse_baiinfo_peanut_meal_price_with_date(self):
+        result = api_server.outcall_api.parse_peanut_meal_price(
+            "11月26日，国内花生粕市场主流参考价格为3,150元/吨。",
+            today=date(2026, 11, 26),
+        )
+        self.assertEqual(result, {"price": 3150.0, "date": "2026-11-26"})
+
+    def test_product_price_tables_cache_one_quote_per_fetch_day(self):
+        today = date.today().isoformat()
+        with closing(sqlite3.connect(db_manager.DATABASE_PATH)) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertTrue(
+            set(db_manager.PRODUCT_PRICE_TABLES.values()).issubset(tables)
+        )
+        with patch.object(
+            api_server.outcall_api,
+            "fetch_public_html",
+            return_value="11月26日，国产芝麻均价为14118元/吨。",
+        ) as fetch:
+            first = api_server.outcall_api.get_sesame_price()
+            second = api_server.outcall_api.get_sesame_price()
+        self.assertEqual(first["price"], 14118.0)
+        self.assertEqual(second, {
+            "date": "2026-11-26",
+            "price": 14118.0,
+            "currency": "CNY",
+        })
+        fetch.assert_called_once_with(api_server.outcall_api.SESAME_PRICE_URL)
+        self.assertEqual(
+            db_manager.get_daily_product_price("sesame", today)["price"],
+            14118.0,
+        )
 
     def test_market_api_failure_returns_translated_error(self):
         with patch.object(
@@ -1397,6 +1465,12 @@ Invoice Date: 2026-10-20
         def fake_public_html(url, encoding="utf-8"):
             if url == api_server.outcall_api.CC_INDEX_PRICES_URL:
                 raise URLError("CC Index unavailable")
+            if url == api_server.outcall_api.SESAME_PRICE_URL:
+                return "11月26日，国产芝麻均价为14118元/吨。"
+            if url == api_server.outcall_api.PEANUT_PRICE_URL:
+                return "2026年11月26日，国内花生通货米均价7971元/吨。"
+            if url == api_server.outcall_api.PEANUT_MEAL_PRICE_URL:
+                return "11月26日，国内花生粕市场主流参考价格为3150元/吨。"
             return (
                 "<table><tr data-currency='美元'>"
                 "<td>美元</td><td>666.30</td><td>666.30</td>"
@@ -1423,9 +1497,19 @@ Invoice Date: 2026-10-20
 
         self.assertEqual(
             set(result["prices"]),
-            {"gold", "btc", "eth", "ice_cotton", "zce_cotton", "usd_cny"},
+            {
+                "gold", "btc", "eth", "ice_cotton", "zce_cotton",
+                "usd_cny", "sesame", "peanut", "peanut_meal",
+            },
         )
-        self.assertEqual(result["asset_dates"], {})
+        self.assertEqual(
+            result["asset_dates"],
+            {
+                "sesame": "2026-11-26",
+                "peanut": "2026-11-26",
+                "peanut_meal": "2026-11-26",
+            },
+        )
 
     def test_sudan_cotton_pricing_returns_target_and_quote_evaluation(self):
         fields = {

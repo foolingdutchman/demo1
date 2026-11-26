@@ -8,6 +8,8 @@ import re
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+import db_manager
+
 
 GOLD_PRICE_API_URL = "https://api.gold-api.com/price/XAU"
 CRYPTO_PRICES_API_URL = (
@@ -20,6 +22,9 @@ ICE_COTTON_PRICE_API_URL = (
 )
 ZCE_COTTON_PRICE_API_URL = "https://hq.sinajs.cn/list=nf_CF0"
 CC_INDEX_PRICES_URL = "https://www.cottonchina.org.cn/"
+SESAME_PRICE_URL = "https://www.baiinfo.com/youliao/zhima"
+PEANUT_PRICE_URL = "https://www.baiinfo.com/youliao/huasheng"
+PEANUT_MEAL_PRICE_URL = "https://www.baiinfo.com/youliao/huashengpo"
 BOC_EXCHANGE_RATES_API_URL = "https://www.boc.cn/sourcedb/whpj/"
 SINA_REFERER_URL = "https://finance.sina.com.cn/"
 ZCE_COTTON_HISTORY_API_URL = (
@@ -54,6 +59,9 @@ MARKET_CURRENCIES = {
     "cc_index_2227b": "CNY",
     "cc_index_2129b": "CNY",
     "usd_cny": "CNY",
+    "sesame": "CNY",
+    "peanut": "CNY",
+    "peanut_meal": "CNY",
 }
 MARKET_HISTORY_ASSETS = set(YAHOO_HISTORY_SYMBOLS) | {"zce_cotton"}
 CC_INDEX_ASSETS = {
@@ -185,6 +193,117 @@ def parse_cc_index_prices(page_html):
     return quotes
 
 
+def parse_sesame_price(page_html, today=None):
+    text = html.unescape(page_html)
+    match = re.search(
+        r"(\d{1,2})月(\d{1,2})日.{0,80}?国产芝麻均价为\s*"
+        r"([\d,]+(?:\.\d+)?)\s*元/吨",
+        text,
+        re.S,
+    )
+    if match is None:
+        raise ValueError("Baiinfo sesame quote was not found")
+    price = float(match.group(3).replace(",", ""))
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("Baiinfo sesame quote is invalid")
+    today = today or datetime.now().date()
+    month, day = map(int, match.group(1, 2))
+    year = today.year
+    quote_date = datetime(year, month, day).date()
+    if quote_date > today and (quote_date - today).days > 7:
+        quote_date = datetime(year - 1, month, day).date()
+    return {"price": price, "date": quote_date.isoformat()}
+
+
+def get_sesame_price():
+    return get_cached_product_price(
+        "sesame",
+        lambda: parse_sesame_price(fetch_public_html(SESAME_PRICE_URL)),
+    )
+
+
+def parse_peanut_price(page_html, today=None):
+    text = html.unescape(page_html)
+    match = re.search(
+        r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日.{0,120}?"
+        r"(?:国内|国产)花生(?:通货[米籽]?)?均价(?:为)?\s*"
+        r"([\d,]+(?:\.\d+)?)\s*元/吨",
+        text,
+        re.S,
+    )
+    if match is None:
+        raise ValueError("Baiinfo peanut quote was not found")
+    price = float(match.group(4).replace(",", ""))
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("Baiinfo peanut quote is invalid")
+    today = today or datetime.now().date()
+    year = int(match.group(1)) if match.group(1) else today.year
+    month, day = map(int, match.group(2, 3))
+    quote_date = datetime(year, month, day).date()
+    if not match.group(1) and quote_date > today and (quote_date - today).days > 7:
+        quote_date = datetime(year - 1, month, day).date()
+    return {"price": price, "date": quote_date.isoformat()}
+
+
+def get_peanut_price():
+    return get_cached_product_price(
+        "peanut",
+        lambda: parse_peanut_price(fetch_public_html(PEANUT_PRICE_URL)),
+    )
+
+
+def parse_peanut_meal_price(page_html, today=None):
+    text = html.unescape(page_html)
+    match = re.search(
+        r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日.{0,80}?"
+        r"花生粕市场主流参考价格为\s*([\d,]+(?:\.\d+)?)\s*元/吨",
+        text,
+        re.S,
+    )
+    if match is None:
+        raise ValueError("Baiinfo peanut meal quote was not found")
+    price = float(match.group(4).replace(",", ""))
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError("Baiinfo peanut meal quote is invalid")
+    today = today or datetime.now().date()
+    year = int(match.group(1)) if match.group(1) else today.year
+    month, day = map(int, match.group(2, 3))
+    quote_date = datetime(year, month, day).date()
+    if not match.group(1) and quote_date > today and (quote_date - today).days > 7:
+        quote_date = datetime(year - 1, month, day).date()
+    return {"price": price, "date": quote_date.isoformat()}
+
+
+def get_peanut_meal_price():
+    return get_cached_product_price(
+        "peanut_meal",
+        lambda: parse_peanut_meal_price(fetch_public_html(PEANUT_MEAL_PRICE_URL)),
+    )
+
+
+def get_cached_product_price(product, fetcher):
+    fetched_date = datetime.now().date().isoformat()
+    try:
+        cached = db_manager.get_daily_product_price(product, fetched_date)
+    except db_manager.DatabaseError as error:
+        logging.warning("Could not read %s daily price cache: %s", product, type(error).__name__)
+        cached = None
+    if cached is not None:
+        return cached
+    quote = fetcher()
+    try:
+        db_manager.save_daily_product_price(
+            product,
+            fetched_date,
+            quote["date"],
+            quote["price"],
+            "CNY",
+        )
+    except db_manager.DatabaseError as error:
+        logging.warning("Could not save %s daily price cache: %s", product, type(error).__name__)
+    return quote
+
+
 def get_market_prices():
     try:
         gold = fetch_public_json(GOLD_PRICE_API_URL)
@@ -206,6 +325,48 @@ def get_market_prices():
         ) as error:
             logging.warning(
                 "Could not retrieve CC Index prices: %s",
+                type(error).__name__,
+            )
+        sesame_quote = None
+        try:
+            sesame_quote = get_sesame_price()
+        except (
+            URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+            logging.warning(
+                "Could not retrieve sesame price: %s",
+                type(error).__name__,
+            )
+        peanut_quote = None
+        try:
+            peanut_quote = get_peanut_price()
+        except (
+            URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+            logging.warning(
+                "Could not retrieve peanut price: %s",
+                type(error).__name__,
+            )
+        peanut_meal_quote = None
+        try:
+            peanut_meal_quote = get_peanut_meal_price()
+        except (
+            URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+            logging.warning(
+                "Could not retrieve peanut meal price: %s",
                 type(error).__name__,
             )
         ice_result = ice_cotton["chart"]["result"][0]
@@ -233,6 +394,15 @@ def get_market_prices():
         for asset, quote in cc_index_quotes.items():
             prices[asset] = quote["price"]
             asset_dates[asset] = quote["date"]
+        if sesame_quote is not None:
+            prices["sesame"] = sesame_quote["price"]
+            asset_dates["sesame"] = sesame_quote["date"]
+        if peanut_quote is not None:
+            prices["peanut"] = peanut_quote["price"]
+            asset_dates["peanut"] = peanut_quote["date"]
+        if peanut_meal_quote is not None:
+            prices["peanut_meal"] = peanut_meal_quote["price"]
+            asset_dates["peanut_meal"] = peanut_meal_quote["date"]
         if any(not math.isfinite(price) or price <= 0 for price in prices.values()):
             raise ValueError("Public market API returned an invalid price")
         import_cotton_price = round(
@@ -261,6 +431,9 @@ def get_market_prices():
             "cc_index_2227b": "CNY",
             "cc_index_2129b": "CNY",
             "usd_cny": "CNY",
+            "sesame": "CNY",
+            "peanut": "CNY",
+            "peanut_meal": "CNY",
         },
         "asset_dates": asset_dates,
         "prices": prices,
