@@ -102,12 +102,19 @@ def analyze_shipping_document_text(text):
             r"[:：]?\s*([A-Z0-9][A-Z0-9/_.-]{2,})"
         ),
         "BL_NET_WEIGHT": (
-            r"(?:NET\s+WEIGHT|NET\s+WT\.?|GROSS/NET)"
+            r"(?:NET\s+WEIGHT|NET\s+WT\.?)\s*[:：]?\s*([\d,.]+)|"
+            r"GROSS\s*/\s*NET(?:\s+WEIGHT)?\s*[:：]?\s*"
+            r"[\d,.]+\s*/\s*([\d,.]+)"
+        ),
+        "GROSS_WEIGHT": (
+            r"(?:GROSS\s+WEIGHT|GROSS\s+WT\.?|"
+            r"GROSS\s*/\s*NET(?:\s+WEIGHT)?)"
             r"\s*[:：]?\s*([\d,.]+)"
         ),
         "WEIGHT_UNIT": (
-            r"(?:NET\s+WEIGHT|NET\s+WT\.?|GROSS/NET)"
-            r"\s*[:：]?\s*[\d,.]+\s*(KGS?|KILOS?|MTS?|TONS?)"
+            r"(?:NET\s+WEIGHT|NET\s+WT\.?|GROSS\s+WEIGHT|GROSS\s+WT\.?|"
+            r"GROSS\s*/\s*NET(?:\s+WEIGHT)?)\s*[:：]?\s*[\d,.]+"
+            r"(?:\s*/\s*[\d,.]+)?\s*(KGS?|KILOS?|MTS?|TONS?)"
         ),
         "DEPARTURE_DATE": (
             r"(?:ETD|DEPARTURE\s+DATE|DATE\s+OF\s+DEPARTURE|SAILED\s+ON)"
@@ -144,7 +151,11 @@ def analyze_shipping_document_text(text):
     for field, pattern in field_patterns.items():
         match = re.search(pattern, text or "", flags=re.IGNORECASE)
         if match:
-            fields[field] = re.sub(r"\s+", " ", match.group(1)).strip(" :-\t")
+            value = next(
+                (group for group in match.groups() if group is not None),
+                match.group(0),
+            )
+            fields[field] = re.sub(r"\s+", " ", value).strip(" :-\t")
     if category == "bill_of_lading":
         fields.setdefault("BL_NUMBER", fields.get("document_number", ""))
     return {
@@ -164,6 +175,7 @@ def analyze_shipping_document_text(text):
                 for field in (
                     "BL_NUMBER",
                     "BL_NET_WEIGHT",
+                    "GROSS_WEIGHT",
                     "WEIGHT_UNIT",
                     "DEPARTURE_DATE",
                     "ARRIVAL_DATE",

@@ -598,6 +598,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 "document_number": "BL-2026-001",
                 "BL_NUMBER": "BL-2026-001",
                 "BL_NET_WEIGHT": "100000",
+                "GROSS_WEIGHT": "120000",
                 "WEIGHT_UNIT": "KGS",
                 "DEPARTURE_DATE": "2026-11-01",
                 "ARRIVAL_DATE": "2026-12-01",
@@ -611,6 +612,7 @@ class ApiIntegrationTests(unittest.TestCase):
             "waybill": {
                 "BL_NUMBER": "BL-2026-001",
                 "BL_NET_WEIGHT": "100000",
+                "GROSS_WEIGHT": "120000",
                 "WEIGHT_UNIT": "KGS",
                 "DEPARTURE_DATE": "2026-11-01",
                 "ARRIVAL_DATE": "2026-12-01",
@@ -674,6 +676,7 @@ class ApiIntegrationTests(unittest.TestCase):
             if item["related_document_id"] == related_document["id"]
         )
         self.assertEqual(waybill["BL_NET_WEIGHT"], "100000")
+        self.assertEqual(waybill["GROSS_WEIGHT"], "120000")
         all_waybills = json.loads(self.request("/api/waybills").read())["waybills"]
         self.assertEqual(len(all_waybills), 2)
         self.assertTrue(all(
@@ -1211,6 +1214,7 @@ Consignee: Buyer Company Ltd.
         waybill_text = pdf_analysis.analyze_shipping_document_text(
             """BILL OF LADING
 B/L No: BL-2026-777
+Gross Weight: 100000 KGS
 Net Weight: 98500 KGS
 Departure Date: 2026-11-02
 Arrival Date: 2026-12-03
@@ -1222,7 +1226,16 @@ Invoice Date: 2026-10-20
         )
         self.assertEqual(waybill_text["waybill"]["BL_NUMBER"], "BL-2026-777")
         self.assertEqual(waybill_text["waybill"]["BL_NET_WEIGHT"], "98500")
+        self.assertEqual(waybill_text["waybill"]["GROSS_WEIGHT"], "100000")
         self.assertEqual(waybill_text["waybill"]["PACK_UNIT"], "BALES")
+        combined_weight = pdf_analysis.analyze_shipping_document_text(
+            """BILL OF LADING
+Gross/Net Weight: 120000/98500 KGS
+"""
+        )["waybill"]
+        self.assertEqual(combined_weight["GROSS_WEIGHT"], "120000")
+        self.assertEqual(combined_weight["BL_NET_WEIGHT"], "98500")
+        self.assertEqual(combined_weight["WEIGHT_UNIT"], "KGS")
 
     def test_image_only_pdf_uses_paddle_ocr(self):
         pdf_bytes = b"%PDF-image-only"

@@ -19,6 +19,18 @@ function element() {
 	};
 }
 
+test("waybill detail table scrolls horizontally instead of wrapping fields", () => {
+	assert.match(
+		page,
+		/\.waybill-editor \{ width: 100%; min-width: 0; max-width: 100%; margin-top: 12px; overflow-x: auto; \}/,
+	);
+	assert.match(page, /\.waybill-section \{ min-width: 0;/);
+	assert.match(
+		page,
+		/\.waybill-table th, \.waybill-table td \{[^}]*white-space: nowrap;/,
+	);
+});
+
 test("order documents lists categories, generates, and downloads purchase contract", async () => {
 	assert.equal((page.match(/class="document-row"/g) || []).length, 4);
 	assert.doesNotMatch(page, /<button[^>]+disabled/);
@@ -143,13 +155,19 @@ test("intermediary documents display two generated contracts", async () => {
 			id: 7,
 			filename: "bill.pdf",
 			analysis_status: "complete",
-			analysis: { category: "bill_of_lading", fields: {}, text: "B/L" },
+			analysis: {
+				category: "bill_of_lading",
+				fields: { BL_NUMBER: "BL-777" },
+				text: "B/L",
+			},
+			summary: "Cotton shipment from Sudan",
 			created_at: "2026-11-25",
 		};
 		const waybill = {
 			related_document_id: 7,
 			BL_NUMBER: "BL-777",
 			BL_NET_WEIGHT: "100000",
+			GROSS_WEIGHT: "120000",
 			WEIGHT_UNIT: "KGS",
 			DEPARTURE_DATE: "",
 			ARRIVAL_DATE: "",
@@ -181,6 +199,17 @@ test("intermediary documents display two generated contracts", async () => {
 		vm.runInContext("initAuthenticatedPage = async () => true", context);
 		await vm.runInContext("initOrderDocumentsPage()", context);
 		const relatedActions = elements.get("order-docs-list").children[1].children[2];
+		const relatedFileInfo = elements.get("order-docs-list")
+			.children[1].children[1].children[0];
+		assert.equal(relatedFileInfo.children.length, 2);
+		assert.equal(
+			relatedFileInfo.children[0].textContent,
+			"order.document.summary: Cotton shipment from Sudan",
+		);
+		assert.equal(
+			relatedFileInfo.children[1].textContent,
+			"site.uploaded_at: 2026-11-25",
+		);
 		assert.equal(relatedActions.children[0].className, "related-document-actions");
 		const fileRow = relatedActions.children[0].children[0];
 		assert.equal(fileRow.className, "related-document-row");
@@ -195,14 +224,15 @@ test("intermediary documents display two generated contracts", async () => {
 		assert.equal(waybillEditor.children[1].className, "waybill-table");
 		const table = waybillEditor.children[1];
 		const displayRow = table.children[1].children[0];
-		assert.equal(displayRow.children.length, 13);
-		displayRow.children[12].children[0].events.click();
+		assert.equal(displayRow.children.length, 14);
+		assert.equal(displayRow.children[4].textContent, "120000");
+		displayRow.children[13].children[0].events.click();
 		assert.ok(displayRow.children[2].children[0]);
-		assert.equal(displayRow.children[12].children[0].children[0].textContent, "waybill.confirm");
-		assert.equal(displayRow.children[12].children[0].children[1].textContent, "waybill.cancel");
-		displayRow.children[12].children[0].children[1].events.click();
+		assert.equal(displayRow.children[13].children[0].children[0].textContent, "waybill.confirm");
+		assert.equal(displayRow.children[13].children[0].children[1].textContent, "waybill.cancel");
+		displayRow.children[13].children[0].children[1].events.click();
 		assert.equal(displayRow.children[2].textContent, "BL-777");
-		assert.equal(displayRow.children[12].children[0].textContent, "waybill.edit");
+		assert.equal(displayRow.children[13].children[0].textContent, "waybill.edit");
 	});
 	vm.runInContext(app, context);
 	vm.runInContext(docs, context);

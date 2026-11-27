@@ -5,6 +5,10 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const app = fs.readFileSync(path.join(__dirname, "..", "frontend", "app.js"), "utf8");
+const assetsPage = fs.readFileSync(
+	path.join(__dirname, "..", "frontend", "assets.html"),
+	"utf8",
+);
 
 function element() {
 	return {
@@ -13,6 +17,15 @@ function element() {
 		replaceChildren(...items) { this.children = items; },
 	};
 }
+
+test("waybill list table keeps cells on one line and scrolls horizontally", () => {
+	assert.match(assetsPage, /\.table-wrap \{ overflow-x: auto; \}/);
+	assert.match(assetsPage, /\.waybill-list-table \{ width: max-content; min-width: 100%; \}/);
+	assert.match(
+		assetsPage,
+		/\.waybill-list-table th, \.waybill-list-table td \{ white-space: nowrap; \}/,
+	);
+});
 
 test("assets page renders every user order and waybill", async () => {
 	const elements = new Map([
@@ -53,10 +66,12 @@ test("assets page renders every user order and waybill", async () => {
 					waybills: [
 						{ order_id: 2, product: "棉花", origin: "苏丹",
 							BL_NUMBER: "BL-2", BL_NET_WEIGHT: "20000",
+							GROSS_WEIGHT: "21000",
 							WEIGHT_UNIT: "KGS", DEPARTURE_DATE: "2026-11-10",
 							ARRIVAL_DATE: "2026-12-01", VOYAGE_NUMBER: "V2" },
 						{ order_id: 1, product: "棉花", origin: "新疆",
 							BL_NUMBER: "BL-1", BL_NET_WEIGHT: "10000",
+							GROSS_WEIGHT: "11000",
 							WEIGHT_UNIT: "KGS", DEPARTURE_DATE: "2026-11-09",
 							ARRIVAL_DATE: "2026-11-30", VOYAGE_NUMBER: "V1" },
 					],
@@ -81,5 +96,6 @@ test("assets page renders every user order and waybill", async () => {
 	assert.equal(ordersTable.children[1].children.length, 2);
 	assert.equal(waybillsTable.children[1].children.length, 2);
 	assert.equal(ordersTable.children[1].children[0].children[7].children[0].href, "order_detail.html?id=2");
-	assert.equal(waybillsTable.children[1].children[0].children[9].children[0].href, "order_docs.html?id=2");
+	assert.equal(waybillsTable.children[1].children[0].children[5].textContent, "21000");
+	assert.equal(waybillsTable.children[1].children[0].children[10].children[0].href, "order_docs.html?id=2");
 });

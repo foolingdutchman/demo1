@@ -1253,7 +1253,7 @@ async function initAssetsPage() {
 	await Promise.all([loadAssetOrders(), loadAssetWaybills()]);
 }
 
-function appendAssetTable(container, labels, records, cells) {
+function appendAssetTable(container, labels, records, cells, tableClass = "") {
 	container.replaceChildren();
 	if (!records.length) {
 		const empty = document.createElement("p");
@@ -1265,6 +1265,7 @@ function appendAssetTable(container, labels, records, cells) {
 	const wrapper = document.createElement("div");
 	wrapper.className = "table-wrap";
 	const table = document.createElement("table");
+	table.className = tableClass;
 	const head = document.createElement("thead");
 	const headerRow = document.createElement("tr");
 	for (const label of labels) {
@@ -1351,6 +1352,7 @@ async function loadAssetWaybills() {
 				App.t("market.cotton_column.origin"),
 				App.t("waybill.bl_number"),
 				App.t("waybill.bl_net_weight"),
+				App.t("waybill.gross_weight"),
 				App.t("waybill.weight_unit"),
 				App.t("waybill.departure_date"),
 				App.t("waybill.arrival_date"),
@@ -1368,6 +1370,7 @@ async function loadAssetWaybills() {
 					waybill.origin,
 					waybill.BL_NUMBER,
 					waybill.BL_NET_WEIGHT,
+					waybill.GROSS_WEIGHT,
 					waybill.WEIGHT_UNIT,
 					waybill.DEPARTURE_DATE,
 					waybill.ARRIVAL_DATE,
@@ -1375,6 +1378,7 @@ async function loadAssetWaybills() {
 					link,
 				];
 			},
+			"waybill-list-table",
 		);
 	} catch (error) {
 		handleUnauthorized(error, "assets.html");

@@ -28,6 +28,7 @@
 		.filename { font-weight: 600; overflow-wrap: anywhere; }
 		.related-file { padding: 7px 0; }
 		.related-file + .related-file { border-top: 1px solid #e7eceb; }
+		.related-file-summary { overflow-wrap: anywhere; }
 		.actions { display: flex; flex-wrap: wrap; gap: 8px; }
 		.actions.related-actions { grid-column: 2 / -1; display: grid; gap: 8px; }
 		.related-document-actions { display: grid; gap: 8px; width: 100%; }
@@ -39,14 +40,14 @@
 		.document-review-dialog { width: min(760px, 100%); }
 		.review-field { display: grid; gap: 7px; margin-top: 14px; color: #46546a; font-size: 13px; }
 		.review-field textarea { width: 100%; min-height: 76px; padding: 10px; border: 1px solid #cbd6d3; border-radius: 7px; font: inherit; resize: vertical; }
-		.waybill-editor { max-width: 100%; margin-top: 12px; overflow-x: auto; }
-		.waybill-section { padding: 18px; border: 1px solid #dfe8e5; border-radius: 10px; background: #fff; }
+		.waybill-editor { width: 100%; min-width: 0; max-width: 100%; margin-top: 12px; overflow-x: auto; }
+		.waybill-section { min-width: 0; padding: 18px; border: 1px solid #dfe8e5; border-radius: 10px; background: #fff; }
 		.waybill-section h2 { margin: 0 0 10px; font-size: 18px; }
 		.waybill-caption { margin-top: 8px; color: #46546a; font-size: 13px; font-weight: 600; }
-		.waybill-table { table-layout: fixed; width: 100%; border-collapse: collapse; }
-		.waybill-table th, .waybill-table td { padding: 7px; border: 1px solid #dfe8e5; text-align: left; overflow-wrap: anywhere; }
+		.waybill-table { width: max-content; min-width: 100%; border-collapse: collapse; }
+		.waybill-table th, .waybill-table td { padding: 7px; border: 1px solid #dfe8e5; text-align: left; white-space: nowrap; }
 		.waybill-table th { color: #46546a; background: #f7faf9; font-size: 12px; }
-		.waybill-table input { min-width: 0; width: 100%; padding: 6px; border: 1px solid #cbd6d3; border-radius: 5px; font: inherit; font-size: 12px; }
+		.waybill-table input { min-width: 120px; width: 100%; padding: 6px; border: 1px solid #cbd6d3; border-radius: 5px; font: inherit; font-size: 12px; }
 		.waybill-table th:last-child, .waybill-table td:last-child { width: 150px; }
 		.waybill-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 		footer { margin-top: 28px; color: #8792a4; font-size: 14px; text-align: center; }
@@ -96,7 +97,7 @@
 	</main>
 	<script src="api-config.js"></script>
 	<script src="client.js"></script>
-	<script src="order_docs.js?v=20261125-2025"></script>
+	<script src="order_docs.js?v=20261127-1727"></script>
 	<script src="app.js?v=20261125-2025"></script>
 </body>
 </html>

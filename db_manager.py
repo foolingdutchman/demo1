@@ -281,6 +281,7 @@ def initialize_waybills(connection):
             related_document_id INTEGER NOT NULL UNIQUE,
             BL_NUMBER TEXT,
             BL_NET_WEIGHT TEXT,
+            GROSS_WEIGHT TEXT,
             WEIGHT_UNIT TEXT,
             DEPARTURE_DATE TEXT,
             ARRIVAL_DATE TEXT,
@@ -298,7 +299,7 @@ def initialize_waybills(connection):
     columns = {
         row[1] for row in connection.execute("PRAGMA table_info(waybills)")
     }
-    for column in ("product", "origin"):
+    for column in ("product", "origin", "GROSS_WEIGHT"):
         if column not in columns:
             connection.execute(f"ALTER TABLE waybills ADD COLUMN {column} TEXT")
     connection.execute(
@@ -847,6 +848,7 @@ def list_order_related_documents(user_id, order_id):
 WAYBILL_FIELDS = (
     "BL_NUMBER",
     "BL_NET_WEIGHT",
+    "GROSS_WEIGHT",
     "WEIGHT_UNIT",
     "DEPARTURE_DATE",
     "ARRIVAL_DATE",

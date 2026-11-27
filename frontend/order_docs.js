@@ -7,6 +7,7 @@ const ORDER_DOCUMENT_TYPES = [
 const WAYBILL_FIELDS = [
 	["BL_NUMBER", "waybill.bl_number"],
 	["BL_NET_WEIGHT", "waybill.bl_net_weight"],
+	["GROSS_WEIGHT", "waybill.gross_weight"],
 	["WEIGHT_UNIT", "waybill.weight_unit"],
 	["DEPARTURE_DATE", "waybill.departure_date"],
 	["ARRIVAL_DATE", "waybill.arrival_date"],
@@ -81,30 +82,32 @@ async function initOrderDocumentsPage() {
 			for (const file of files) {
 				const item = document.createElement("div");
 				item.className = "related-file";
-				const filename = document.createElement("div");
-				filename.className = type === "related_documents"
-					? "meta"
-					: "filename";
-				filename.textContent = type === "related_documents"
-					? App.t("order.document.analysis_result")
-					: file.filename;
-				const meta = document.createElement("div");
-				meta.className = "meta";
-				const category = file.analysis_status === "pending"
-					? App.t("order.document.analysis_pending")
-					: file.analysis?.category
-					? App.t(`order.document.category.${file.analysis.category}`)
-					: App.t("order.document.category.unrecognized");
-				const fields = Object.entries(file.analysis?.fields || {})
-					.map(([key, value]) => `${App.t(`order.document.field.${key}`)}: ${value}`)
-					.join(" · ");
-				meta.textContent = [category, file.created_at, fields].filter(Boolean).join(" · ");
-				item.append(filename, meta);
-				if (file.summary) {
+				if (type === "related_documents") {
 					const summary = document.createElement("div");
-					summary.className = "meta";
-					summary.textContent = `${App.t("order.document.summary")}: ${file.summary}`;
-					item.append(summary);
+					summary.className = "meta related-file-summary";
+					summary.textContent = `${App.t("order.document.summary")}: ${file.summary || "—"}`;
+					const uploadedAt = document.createElement("div");
+					uploadedAt.className = "meta";
+					uploadedAt.textContent = `${App.t("site.uploaded_at")}: ${file.created_at || "—"}`;
+					item.append(summary, uploadedAt);
+				} else {
+					const filename = document.createElement("div");
+					filename.className = "filename";
+					filename.textContent = file.filename;
+					const meta = document.createElement("div");
+					meta.className = "meta";
+					const category = file.analysis_status === "pending"
+						? App.t("order.document.analysis_pending")
+						: file.analysis?.category
+						? App.t(`order.document.category.${file.analysis.category}`)
+						: App.t("order.document.category.unrecognized");
+					const fields = Object.entries(file.analysis?.fields || {})
+						.map(([key, value]) => `${App.t(`order.document.field.${key}`)}: ${value}`)
+						.join(" · ");
+					meta.textContent = [category, file.created_at, fields]
+						.filter(Boolean)
+						.join(" · ");
+					item.append(filename, meta);
 				}
 				detail.append(item);
 			}
