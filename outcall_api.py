@@ -9,6 +9,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import db_manager
+import products_pricing
 
 
 GOLD_PRICE_API_URL = "https://api.gold-api.com/price/XAU"
@@ -486,6 +487,25 @@ def get_market_prices():
         logging.exception("Could not retrieve public market prices")
         raise MarketDataUnavailable from error
 
+    derived_prices = {
+        "import_cotton": import_cotton_price,
+    }
+    for product, vat_factor in (
+        ("sesame", 1.09),
+        ("peanut", 1.09),
+        ("peanut_meal", 1),
+    ):
+        import_price = None
+        if product in prices and "usd_cny" in prices:
+            import_price = products_pricing.calculate_same_cost_import_price(
+                prices[product],
+                prices["usd_cny"],
+                vat_factor=vat_factor,
+            )
+        derived_prices[f"import_{product}"] = (
+            round(import_price, 2) if import_price is not None else None
+        )
+
     return {
         "currency": "USD",
         "asset_currencies": {
@@ -501,9 +521,7 @@ def get_market_prices():
         },
         "asset_dates": asset_dates,
         "prices": prices,
-        "derived_prices": {
-            "import_cotton": import_cotton_price,
-        },
+        "derived_prices": derived_prices,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -8,6 +8,43 @@ class PricingInputError(ValueError):
     pass
 
 
+PRODUCT_VAT_PERCENT = {
+    "sesame": 9,
+    "peanut": 9,
+    "peanut_meal": 0,
+}
+
+
+def calculate_same_cost_import_price(
+    current_price_cny_per_ton,
+    usd_cny_rate,
+    customs_cost_cny_per_ton=250,
+    vat_factor=1.09,
+):
+    try:
+        current_price = float(current_price_cny_per_ton)
+        exchange_rate = float(usd_cny_rate)
+        customs_cost = float(customs_cost_cny_per_ton)
+        vat_factor = float(vat_factor)
+    except (TypeError, ValueError) as error:
+        raise PricingInputError("invalid_import_price_input") from error
+    if (
+        not all(math.isfinite(value) for value in (
+            current_price,
+            exchange_rate,
+            customs_cost,
+            vat_factor,
+        ))
+        or current_price <= 0
+        or exchange_rate <= 0
+        or customs_cost < 0
+        or vat_factor <= 0
+    ):
+        raise PricingInputError("invalid_import_price_input")
+    price = (current_price - customs_cost) / vat_factor / exchange_rate
+    return price if math.isfinite(price) and price > 0 else None
+
+
 def usd_per_metric_ton_to_us_cents_per_lb(usd_per_metric_ton):
     return usd_per_metric_ton / USD_PER_METRIC_TON_PER_US_CENT_PER_LB
 
@@ -344,3 +381,56 @@ def calculate_sudan_cotton_pricing(fields):
             "supplier_quote": quote_scenarios,
         },
     }
+
+
+def calculate_product_purchase_pricing(fields):
+    product = fields.get("product")
+    if product not in PRODUCT_VAT_PERCENT:
+        raise PricingInputError("product")
+    vat_percent = PRODUCT_VAT_PERCENT[product]
+    pricing_fields = {
+        "direct_buyer_bid_cny_per_ton": "",
+        "buyer_bid_vat_inclusive": "true",
+        "domestic_benchmark_cny_per_ton": fields.get(
+            "domestic_benchmark_cny_per_ton", ""
+        ),
+        "benchmark_vat_inclusive": "true",
+        "quality_discount_cny_per_ton": fields.get(
+            "quality_discount_cny_per_ton", "0"
+        ),
+        "quality_discount_basis": "gross",
+        "domestic_sales_vat_percent": str(vat_percent),
+        "fx_cny_per_usd": fields.get("fx_cny_per_usd", ""),
+        "duty_percent": fields.get("duty_percent", "0"),
+        "import_vat_percent": str(vat_percent),
+        "import_vat_recoverable_percent": fields.get(
+            "import_vat_recoverable_percent", "100"
+        ),
+        "quota_cost_cny_per_ton": "0",
+        "quota_recoverable_vat_cny_per_ton": "0",
+        "other_nonrecoverable_cost_cny_per_ton": fields.get(
+            "other_nonrecoverable_cost_cny_per_ton", "0"
+        ),
+        "other_recoverable_vat_cny_per_ton": fields.get(
+            "other_recoverable_vat_cny_per_ton", "0"
+        ),
+        "target_profit_cny_per_ton": fields.get(
+            "target_profit_cny_per_ton", "0"
+        ),
+        "supplier_quote_usd_per_ton": fields.get(
+            "supplier_quote_usd_per_ton", ""
+        ),
+        "supplier_quote_basis": fields.get("supplier_quote_basis", "CIF"),
+        "ocean_freight_usd_per_ton": fields.get(
+            "ocean_freight_usd_per_ton", "0"
+        ),
+        "insurance_usd_per_ton": fields.get("insurance_usd_per_ton", "0"),
+        "other_cif_cost_usd_per_ton": fields.get(
+            "other_cif_cost_usd_per_ton", "0"
+        ),
+        "quantity_tons": fields.get("quantity_tons", ""),
+    }
+    result = calculate_sudan_cotton_pricing(pricing_fields)
+    result["inputs"]["product"] = product
+    result["scenarios"]["quota"] = []
+    return result

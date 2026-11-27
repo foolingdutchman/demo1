@@ -12,7 +12,10 @@ Add:	{buyer_address}
 The buyer hereby confirmed having bought from the seller the following goods on terms and conditions as specified below:
 
 1)	Commodity:	AFRICAN RAW {product},
-    {crop_year} Crop, Grade: SM, Staple: {staple_length}mm, MIC:{mic}, Strength: {strength}GPT MIN.
+    {?product==COTTON: {crop_year} Crop, Grade: SM, Staple: {staple_length}mm, MIC:{mic}, Strength: {strength}GPT MIN.} 
+    {?product==SESAME: {crop_year} Crop, Purity: {purity}%， Oil Content: {oil_content}%，Moisture: {moisture}%,FFA: {ffa}%.}
+    {?product==PEANUT: {crop_year} Crop, Purity: {purity}%， Oil Content: {oil_content}%，Moisture: {moisture}%,FFA: {ffa}%,Alfatoxin: {alfatoxin}%.}
+    {?product==PEANUT_MEAL: {crop_year} Crop, Protein: {protein}%， Oil Content: {oil_content}%， Moisture: {moisture}%, FFA: {ffa}%, Alfatoxin: {alfatoxin}%.}
 2)	Quantity:	 {quantity} metric tons
     5% more or less in seller's option at contract price.
 3)	Packing:	In BALES
@@ -22,7 +25,7 @@ The buyer hereby confirmed having bought from the seller the following goods on 
 7)	Insurance:   Insurance shall be covered by SELLER.
 8)	Payment:	 100% T/T after goods arrive.
 9)	Amount:	     USD {amount}
-10)	Weight Basis:    Net Landed Weight as per CIQ certificate.
+10)	Weight Basis:    Net Landed Weight as per CIQ certificate or Weight memo.
 11)	Documents required:
     1.	SIGNED COMMERCIAL INOVICE IN 1 ORIGNAL OR SCAN COPY.
     2.	FULL SET OF ORIGINAL CLEAN ON-BOARD OCEAN MASTER BILL OF LADING OR COPY OF NON-NEGOTIABLE WAYBILL, MARKED “FREIGHT PREPAID” AND CONSIGNEE SHOWED THE BUYER WITH FULL NAME AND ADDRESS.

@@ -3,7 +3,7 @@ import re
 
 import db_manager
 import quotation_manager
-import sudan_cotton_pricing
+import products_pricing
 
 
 PRICING_FIELDS = {
@@ -63,7 +63,7 @@ def validate_order(fields, allow_quotation_id):
         and pricing["fx_cny_per_usd"].strip()
     )
     if hidden_pricing_available:
-        result = sudan_cotton_pricing.calculate_sudan_cotton_pricing(pricing)
+        result = products_pricing.calculate_sudan_cotton_pricing(pricing)
     else:
         quantity = float(pricing["quantity_tons"])
         supplier_quote = float(pricing["supplier_quote_usd_per_ton"])

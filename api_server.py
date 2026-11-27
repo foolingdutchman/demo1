@@ -20,7 +20,7 @@ import order_manager
 import outcall_api
 import purchase_contract
 import quotation_manager
-import sudan_cotton_pricing
+import products_pricing
 from ai_analysis import TEXT_EXTENSIONS, decode_text_file
 from excel_analysis import EXCEL_EXTENSIONS, ExcelAnalysisError, build_excel_analysis
 from i18n import SUPPORTED_LOCALES, get_locale, get_messages, translate
@@ -287,12 +287,27 @@ class ApiHandler(BaseHTTPRequestHandler):
         if fields is None:
             return
         try:
-            result = sudan_cotton_pricing.calculate_sudan_cotton_pricing(fields)
-        except sudan_cotton_pricing.PricingInputError:
+            result = products_pricing.calculate_sudan_cotton_pricing(fields)
+        except products_pricing.PricingInputError:
             self._send_error_json(
                 400,
                 "invalid_pricing_input",
                 self._t("market.sudan_pricing_invalid_input"),
+            )
+            return
+        self._send_json(result)
+
+    def _handle_product_purchase_pricing(self):
+        fields = self._read_json()
+        if fields is None:
+            return
+        try:
+            result = products_pricing.calculate_product_purchase_pricing(fields)
+        except products_pricing.PricingInputError:
+            self._send_error_json(
+                400,
+                "invalid_product_pricing_input",
+                self._t("market.product_pricing_invalid_input"),
             )
             return
         self._send_json(result)
@@ -1290,6 +1305,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
         if parsed.path == "/api/sudan-cotton-pricing":
             self._handle_sudan_cotton_pricing()
+            return
+        if parsed.path == "/api/product-pricing":
+            self._handle_product_purchase_pricing()
             return
         if parsed.path == "/api/auth":
             self._handle_auth()

@@ -20,7 +20,10 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 
 
-TEMPLATE_PATH = Path(__file__).with_name("templates") / "purchase_contract_timplate.md"
+TEMPLATE_PATH = Path(__file__).with_name("templates") / "purchase_contract_template.md"
+PRODUCT_CONDITION_RE = re.compile(
+    r"^(\s*)\{\?product==([A-Z_]+):\s*(.*?)\}\s*$"
+)
 USD_PER_TON_PER_USC_LB = Decimal("22.0462")
 PAGE_WIDTH, PAGE_HEIGHT = A4
 MARGIN = 42
@@ -74,12 +77,15 @@ def build_contract_context(order, username, profile=None, party_role="direct"):
         or order.get("source_quotation_product")
         or "cotton"
     )
-    product = {
+    products = {
         "cotton": "COTTON",
         "sesame": "SESAME",
         "peanut": "PEANUT",
         "peanut_meal": "PEANUT MEAL",
-    }.get(product_type, _text(order.get("product")).upper())
+    }
+    if product_type not in products:
+        raise ContractGenerationError("Unsupported contract product")
+    product = products[product_type]
     is_cotton = product_type == "cotton"
     quotation_date = _text(order.get("quotation_date"), default="")
     created_at = _text(order.get("created_at"), default="")
@@ -111,10 +117,22 @@ def build_contract_context(order, username, profile=None, party_role="direct"):
         "buyer": _text(buyer),
         "buyer_address": _text(buyer_address),
         "product": product,
-        "crop_year": quotation_date[:4] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", quotation_date) else "—",
+        "product_code": product_type.upper(),
+        "crop_year": _text(
+            order.get("crop_year"),
+            default=quotation_date[:4]
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", quotation_date)
+            else "—",
+        ),
         "staple_length": _number(order.get("length_mm")),
         "mic": _number(order.get("micronaire")),
         "strength": _number(order.get("strength_min"), default=_number(order.get("strength_average"))),
+        "purity": _number(order.get("purity_percent")),
+        "oil_content": _number(order.get("oil_percent")),
+        "moisture": _number(order.get("moisture_percent")),
+        "ffa": _number(order.get("ffa_percent")),
+        "alfatoxin": _number(order.get("aflatoxin_ppb")),
+        "protein": _number(order.get("protein_percent")),
         "quantity": _number(quantity, 3),
         "shipment_date": _text(order.get("delivery_date")),
         "unit_price": _number(
@@ -134,8 +152,17 @@ def render_contract_text(order, username, template_text=None, profile=None, part
     except OSError as error:
         raise ContractGenerationError("Purchase contract template is unavailable") from error
     values = build_contract_context(order, username, profile, party_role)
+    template_lines = []
+    for line in template.splitlines():
+        condition = PRODUCT_CONDITION_RE.fullmatch(line)
+        if condition is None:
+            template_lines.append(line)
+        elif condition.group(2) == values["product_code"]:
+            template_lines.append(
+                f"{condition.group(1)}{condition.group(3)}"
+            )
     try:
-        rendered = template.format(**values).strip()
+        rendered = "\n".join(template_lines).format(**values).strip()
     except (KeyError, ValueError) as error:
         raise ContractGenerationError("Purchase contract template is invalid") from error
     if re.search(r"\{[^{}]+\}", rendered):

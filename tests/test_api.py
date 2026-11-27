@@ -1393,6 +1393,18 @@ Invoice Date: 2026-10-20
                 2,
             ),
         )
+        self.assertEqual(
+            result["derived_prices"]["import_sesame"],
+            round((14118 - 250) / 1.09 / 6.6911, 2),
+        )
+        self.assertEqual(
+            result["derived_prices"]["import_peanut"],
+            round((7971 - 250) / 1.09 / 6.6911, 2),
+        )
+        self.assertEqual(
+            result["derived_prices"]["import_peanut_meal"],
+            round((3150 - 250) / 6.6911, 2),
+        )
         self.assertIn("updated_at", result)
         self.assertEqual(fetch.call_count, 3)
         fetch_text.assert_called_once()
@@ -1712,6 +1724,63 @@ Invoice Date: 2026-10-20
             result["max_target_cif_cny_per_ton"],
             (15360 / 1.09 - 500 - 5000) / cost_factor,
         )
+
+    def test_product_purchase_pricing_uses_product_vat_without_quota_cost(self):
+        for product, vat_percent in (
+            ("sesame", 9),
+            ("peanut", 9),
+            ("peanut_meal", 0),
+        ):
+            with self.subTest(product=product):
+                fields = {
+                    "product": product,
+                    "domestic_benchmark_cny_per_ton": "10900",
+                    "fx_cny_per_usd": "10",
+                    "quality_discount_cny_per_ton": "0",
+                    "duty_percent": "0",
+                    "import_vat_recoverable_percent": "100",
+                    "other_nonrecoverable_cost_cny_per_ton": "100",
+                    "other_recoverable_vat_cny_per_ton": "0",
+                    "target_profit_cny_per_ton": "500",
+                    "supplier_quote_usd_per_ton": "900",
+                    "supplier_quote_basis": "CIF",
+                    "ocean_freight_usd_per_ton": "0",
+                    "insurance_usd_per_ton": "0",
+                    "other_cif_cost_usd_per_ton": "0",
+                    "quantity_tons": "20",
+                }
+                response = self.request(
+                    "/api/product-pricing",
+                    "POST",
+                    json.dumps(fields).encode(),
+                    {"Content-Type": "application/json"},
+                )
+
+                self.assertEqual(response.code, 200)
+                result = json.loads(response.read())
+                net_sales = 10900 / (1 + vat_percent / 100)
+                self.assertEqual(result["inputs"]["product"], product)
+                self.assertEqual(
+                    result["inputs"]["domestic_sales_vat_percent"],
+                    vat_percent,
+                )
+                self.assertEqual(
+                    result["inputs"]["import_vat_percent"],
+                    vat_percent,
+                )
+                self.assertEqual(
+                    result["inputs"]["quota_cost_cny_per_ton"],
+                    0,
+                )
+                self.assertEqual(result["scenarios"]["quota"], [])
+                self.assertAlmostEqual(
+                    result["max_target_cif_cny_per_ton"],
+                    net_sales - 600,
+                )
+                self.assertAlmostEqual(
+                    result["supplier_evaluation"]["profit_cny_per_ton"],
+                    net_sales - 9100,
+                )
 
     def test_sudan_cotton_pricing_rejects_invalid_recoverability(self):
         fields = {

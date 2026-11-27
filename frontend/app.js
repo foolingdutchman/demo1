@@ -35,8 +35,32 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 let importCottonMarketPrices = null;
+let importProductMarketPrices = null;
 let sudanPricingRequestId = 0;
 let sudanPricingTimer = null;
+let productPricingRequestId = 0;
+let productPricingTimer = null;
+const IMPORT_PRODUCT_DEFAULT_CUSTOMS_COST = 250;
+const IMPORT_PRODUCT_KEYS = ["sesame", "peanut", "peanut_meal"];
+const PRODUCT_PRICING_VAT_PERCENT = {
+	sesame: 9,
+	peanut: 9,
+	peanut_meal: 0,
+};
+const PRODUCT_PRICING_DEFAULTS = {
+	quality_discount_cny_per_ton: "0",
+	duty_percent: "0",
+	import_vat_recoverable_percent: "100",
+	other_nonrecoverable_cost_cny_per_ton: "300",
+	other_recoverable_vat_cny_per_ton: "0",
+	target_profit_cny_per_ton: "200",
+	supplier_quote_usd_per_ton: "",
+	supplier_quote_basis: "CIF",
+	ocean_freight_usd_per_ton: "0",
+	insurance_usd_per_ton: "0",
+	other_cif_cost_usd_per_ton: "0",
+	quantity_tons: "",
+};
 const IMPORT_COTTON_DEFAULTS = {
 	customsCost: 100,
 	clearanceFee: 1.5,
@@ -226,6 +250,21 @@ async function initMarketDetailPage() {
 		const livePriceProducts = ["sesame", "peanut", "peanut_meal"];
 		document.getElementById("market-current-price").parentElement.hidden =
 			!livePriceProducts.includes(product);
+		if (livePriceProducts.includes(product)) {
+			const importPanel = document.getElementById("market-import-product-panel");
+			importPanel.hidden = false;
+			document.getElementById("market-import-product-customs-cost").value =
+				String(IMPORT_PRODUCT_DEFAULT_CUSTOMS_COST);
+			document.getElementById("market-import-product-customs-cost").addEventListener(
+				"input",
+				() => updateImportProductPrice(product),
+			);
+			document.getElementById("market-import-product-formula").textContent =
+				App.t(product === "peanut_meal"
+					? "market.import_product_formula_exempt"
+					: "market.import_product_formula_vat");
+			initProductPurchasePricing(product, productName);
+		}
 		document.getElementById("market-detail-unit").textContent = App.t(
 			`market.${product}_unit`,
 		);
@@ -450,6 +489,21 @@ async function loadMarketDetailCurrentPrice(asset) {
 				: "";
 			queueSudanCottonPricing();
 		}
+		if (IMPORT_PRODUCT_KEYS.includes(asset)) {
+			importProductMarketPrices = result.prices;
+			updateImportProductPrice(asset);
+			document.querySelector(
+				'[data-product-pricing-field="domestic_benchmark_cny_per_ton"]',
+			).value = Number.isFinite(result.prices[asset])
+				? String(result.prices[asset])
+				: "";
+			document.querySelector(
+				'[data-product-pricing-field="fx_cny_per_usd"]',
+			).value = Number.isFinite(result.prices.usd_cny)
+				? String(result.prices.usd_cny)
+				: "";
+			queueProductPricing(asset);
+		}
 	} catch (error) {
 		if (!result) renderDetailCottonIndices(null);
 		value.textContent = App.t("market.unavailable_short");
@@ -459,6 +513,12 @@ async function loadMarketDetailCurrentPrice(asset) {
 				App.t("market.unavailable_short");
 			document.getElementById("market-import-cotton-status").textContent =
 				App.t("market.import_cotton_unavailable");
+		}
+		if (IMPORT_PRODUCT_KEYS.includes(asset)) {
+			document.getElementById("market-import-product-price").textContent =
+				App.t("market.unavailable_short");
+			document.getElementById("market-import-product-status").textContent =
+				App.t("market.import_product_unavailable");
 		}
 	}
 }
@@ -494,6 +554,78 @@ function initSudanCottonPricing() {
 		syncSudanBenchmark,
 	);
 	queueSudanCottonPricing();
+}
+
+function initProductPurchasePricing(product, productName) {
+	document.getElementById("product-pricing-panel").hidden = false;
+	document.getElementById("product-pricing-heading").textContent = App.t(
+		"market.product_pricing_title",
+		{ product: productName },
+	);
+	document.getElementById("product-pricing-vat-rate").textContent = App.t(
+		"market.product_pricing_vat_rate",
+		{ rate: PRODUCT_PRICING_VAT_PERCENT[product] },
+	);
+	for (const [field, value] of Object.entries(PRODUCT_PRICING_DEFAULTS)) {
+		document.querySelector(
+			`[data-product-pricing-field="${field}"]`,
+		).value = value;
+	}
+	for (const field of document.querySelectorAll(
+		"[data-product-pricing-field]",
+	)) {
+		field.addEventListener("input", () => queueProductPricing(product));
+		field.addEventListener("change", () => queueProductPricing(product));
+	}
+	queueProductPricing(product);
+}
+
+function productPricingFields(product) {
+	return {
+		product,
+		...Object.fromEntries(
+			[...document.querySelectorAll("[data-product-pricing-field]")].map(
+				(field) => [field.dataset.productPricingField, field.value],
+			),
+		),
+	};
+}
+
+function queueProductPricing(product) {
+	window.clearTimeout(productPricingTimer);
+	const requestId = ++productPricingRequestId;
+	productPricingTimer = window.setTimeout(
+		() => calculateProductPurchasePricing(requestId, product),
+		180,
+	);
+}
+
+async function calculateProductPurchasePricing(requestId, product) {
+	const status = document.getElementById("product-pricing-status");
+	const results = document.getElementById("product-pricing-results");
+	const fields = productPricingFields(product);
+	if (!fields.domestic_benchmark_cny_per_ton || !fields.fx_cny_per_usd) {
+		status.textContent = App.t("market.sudan_waiting_for_prices");
+		results.hidden = true;
+		return;
+	}
+	status.textContent = App.t("market.sudan_calculating");
+	try {
+		const result = await App.api("/api/product-pricing", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(fields),
+		});
+		if (requestId !== productPricingRequestId) return;
+		renderSudanCottonPricing(result, "product-");
+		status.textContent = "";
+		results.hidden = false;
+	} catch (error) {
+		if (requestId !== productPricingRequestId) return;
+		results.hidden = true;
+		status.textContent = error.message
+			|| App.t("market.product_pricing_unavailable");
+	}
 }
 
 function syncSudanBenchmark() {
@@ -545,7 +677,9 @@ async function calculateSudanCottonPricing(requestId) {
 	}
 }
 
-function renderSudanCottonPricing(result) {
+function renderSudanCottonPricing(result, idPrefix = "") {
+	const element = (id) => document.getElementById(`${idPrefix}${id}`);
+	const productPricing = idPrefix === "product-";
 	const format = (value, digits = 2) => new Intl.NumberFormat(
 		document.documentElement.lang,
 		{ minimumFractionDigits: digits, maximumFractionDigits: digits },
@@ -553,50 +687,56 @@ function renderSudanCottonPricing(result) {
 	const cny = (value) => `CNY ${format(value)}`;
 	const usd = (value) => `USD ${format(value)}`;
 	const usCentsPerLb = (usdPerTon) => format(usdPerTon / USD_PER_TON_PER_USC_LB);
-	const usdPrice = (usdPerTon) => App.t("market.sudan_usd_price_converted", {
-		usd: usd(usdPerTon),
-		usc: usCentsPerLb(usdPerTon),
-	});
-	document.getElementById("sudan-max-target-price").textContent = App.t(
-		"market.sudan_dual_price",
-		{
-			usd: usd(result.max_target_cif_usd_per_ton),
-			cny: cny(result.max_target_cif_cny_per_ton),
-			usc: usCentsPerLb(result.max_target_cif_usd_per_ton),
-		},
+	const usdPrice = (usdPerTon) => productPricing
+		? usd(usdPerTon)
+		: App.t("market.sudan_usd_price_converted", {
+			usd: usd(usdPerTon),
+			usc: usCentsPerLb(usdPerTon),
+		});
+	const dualPrice = (usdValue, cnyValue) => App.t(
+		productPricing ? "market.product_dual_price" : "market.sudan_dual_price",
+		productPricing
+			? { usd: usd(usdValue), cny: cny(cnyValue) }
+			: {
+				usd: usd(usdValue),
+				cny: cny(cnyValue),
+				usc: usCentsPerLb(usdValue),
+			},
 	);
-	document.getElementById("sudan-break-even-price").textContent = App.t(
-		"market.sudan_dual_price",
-		{
-			usd: usd(result.break_even_cif_usd_per_ton),
-			cny: cny(result.break_even_cif_cny_per_ton),
-			usc: usCentsPerLb(result.break_even_cif_usd_per_ton),
-		},
+	element("sudan-max-target-price").textContent = dualPrice(
+		result.max_target_cif_usd_per_ton,
+		result.max_target_cif_cny_per_ton,
 	);
-	document.getElementById("sudan-pricing-limit-status").textContent =
+	element("sudan-break-even-price").textContent = dualPrice(
+		result.break_even_cif_usd_per_ton,
+		result.break_even_cif_cny_per_ton,
+	);
+	element("sudan-pricing-limit-status").textContent =
 		result.max_target_cif_cny_per_ton <= 0
-			? App.t("market.sudan_no_positive_cif")
+			? App.t(productPricing
+				? "market.product_pricing_no_positive_cif"
+				: "market.sudan_no_positive_cif")
 			: "";
 
-	const quotePanel = document.getElementById("sudan-quote-evaluation");
+	const quotePanel = element("sudan-quote-evaluation");
 	const quote = result.supplier_evaluation;
 	quotePanel.hidden = !quote;
 	if (quote) {
-		document.getElementById("sudan-quote-cif-price").textContent = App.t(
+		element("sudan-quote-cif-price").textContent = App.t(
 			"market.sudan_supplier_cif_converted",
 			{ value: usdPrice(quote.cif_usd_per_ton) },
 		);
-		document.getElementById("sudan-quote-profit").textContent = App.t(
+		element("sudan-quote-profit").textContent = App.t(
 			"market.sudan_profit_per_ton",
 			{ value: cny(quote.profit_cny_per_ton) },
 		);
-		document.getElementById("sudan-quote-total-profit").textContent =
+		element("sudan-quote-total-profit").textContent =
 			quote.profit_for_quantity_cny === null
 				? App.t("market.sudan_quantity_not_set")
 				: App.t("market.sudan_profit_total", {
 					value: cny(quote.profit_for_quantity_cny),
 				});
-		document.getElementById("sudan-quote-headroom").textContent = App.t(
+		element("sudan-quote-headroom").textContent = App.t(
 			"market.sudan_price_headroom",
 			{
 				value: usdPrice(
@@ -608,7 +748,7 @@ function renderSudanCottonPricing(result) {
 
 	const cash = result.cash_flow_reference;
 	const cashAmount = (value) => cash ? cny(value) : App.t("market.unavailable_short");
-	document.getElementById("sudan-cash-flow-reference").textContent = App.t(
+	element("sudan-cash-flow-reference").textContent = App.t(
 		"market.sudan_cash_reference",
 		{
 			value: cash
@@ -616,7 +756,7 @@ function renderSudanCottonPricing(result) {
 				: App.t("market.unavailable_short"),
 		},
 	);
-	document.getElementById("sudan-import-vat-cash").textContent = App.t(
+	element("sudan-import-vat-cash").textContent = App.t(
 		"market.sudan_import_vat_cash",
 		{
 			paid: cashAmount(cash && cash.import_vat_paid_cny_per_ton),
@@ -625,13 +765,13 @@ function renderSudanCottonPricing(result) {
 			),
 		},
 	);
-	document.getElementById("sudan-vat-balance").textContent = App.t(
+	element("sudan-vat-balance").textContent = App.t(
 		"market.sudan_vat_balance",
 		{
 			value: cashAmount(cash && cash.net_vat_payable_cny_per_ton),
 		},
 	);
-	document.getElementById("sudan-funding").textContent = App.t(
+	element("sudan-funding").textContent = App.t(
 		"market.sudan_funding",
 		{
 			perTon: cashAmount(cash && cash.initial_funding_cny_per_ton),
@@ -650,6 +790,7 @@ function renderSudanCottonPricing(result) {
 			`${scenario.benchmark_delta_cny_per_ton > 0 ? "+" : ""}${format(scenario.benchmark_delta_cny_per_ton)}`,
 			usdPrice(scenario.max_target_cif_usd_per_ton),
 		]),
+		idPrefix,
 	);
 	renderSudanScenarioTable(
 		"sudan-fx-scenarios",
@@ -658,18 +799,20 @@ function renderSudanCottonPricing(result) {
 			format(scenario.fx_cny_per_usd, 4),
 			usdPrice(scenario.max_target_cif_usd_per_ton),
 		]),
+		idPrefix,
 	);
-	renderSudanScenarioTable(
-		"sudan-quota-scenarios",
-		[App.t("market.sudan_quota_cost_label"), App.t("market.sudan_max_target_price_usd")],
-		result.scenarios.quota.map((scenario) => [
-			cny(scenario.quota_cost_cny_per_ton),
-			usdPrice(scenario.max_target_cif_usd_per_ton),
-		]),
-	);
-	const quoteScenariosPanel = document.getElementById(
-		"sudan-quote-scenarios-panel",
-	);
+	if (result.scenarios.quota.length && element("sudan-quota-scenarios")) {
+		renderSudanScenarioTable(
+			"sudan-quota-scenarios",
+			[App.t("market.sudan_quota_cost_label"), App.t("market.sudan_max_target_price_usd")],
+			result.scenarios.quota.map((scenario) => [
+				cny(scenario.quota_cost_cny_per_ton),
+				usdPrice(scenario.max_target_cif_usd_per_ton),
+			]),
+			idPrefix,
+		);
+	}
+	const quoteScenariosPanel = element("sudan-quote-scenarios-panel");
 	quoteScenariosPanel.hidden = result.scenarios.supplier_quote.length === 0;
 	if (result.scenarios.supplier_quote.length) {
 		renderSudanScenarioTable(
@@ -679,12 +822,13 @@ function renderSudanCottonPricing(result) {
 				usdPrice(scenario.cif_usd_per_ton),
 				cny(scenario.profit_cny_per_ton),
 			]),
+			idPrefix,
 		);
 	}
 }
 
-function renderSudanScenarioTable(containerId, headers, rows) {
-	const container = document.getElementById(containerId);
+function renderSudanScenarioTable(containerId, headers, rows, idPrefix = "") {
+	const container = document.getElementById(`${idPrefix}${containerId}`);
 	const table = document.createElement("table");
 	const thead = document.createElement("thead");
 	const headerRow = document.createElement("tr");
@@ -756,6 +900,60 @@ function updateImportCottonPrice() {
 	});
 	value.textContent = `US¢ ${formatter.format(price)}`;
 	status.textContent = "";
+}
+
+function updateImportProductPrice(product) {
+	const value = document.getElementById("market-import-product-price");
+	const status = document.getElementById("market-import-product-status");
+	const field = document.getElementById("market-import-product-customs-cost");
+	const customsCost = field.valueAsNumber;
+	const valid = field.value !== "" && Number.isFinite(customsCost)
+		&& customsCost >= 0;
+	field.setAttribute("aria-invalid", String(!valid));
+	if (!valid) {
+		value.textContent = "—";
+		status.textContent = App.t("market.import_product_invalid_parameters");
+		return;
+	}
+
+	const price = calculateSameCostImportPrice(
+		importProductMarketPrices,
+		product,
+		customsCost,
+	);
+	if (price === null) {
+		value.textContent = App.t("market.unavailable_short");
+		status.textContent = importProductMarketPrices
+			&& Number.isFinite(importProductMarketPrices[product])
+			&& Number.isFinite(importProductMarketPrices.usd_cny)
+			? App.t("market.import_product_nonpositive_result")
+			: App.t("market.import_product_unavailable");
+		return;
+	}
+
+	const formatter = new Intl.NumberFormat(document.documentElement.lang, {
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2,
+	});
+	value.textContent = `USD ${formatter.format(price)}`;
+	status.textContent = "";
+}
+
+function calculateSameCostImportPrice(prices, product, customsCostCnyPerTon) {
+	if (!IMPORT_PRODUCT_KEYS.includes(product)
+		|| !Number.isFinite(customsCostCnyPerTon)
+		|| customsCostCnyPerTon < 0
+		|| !prices
+		|| !Number.isFinite(prices[product])
+		|| !Number.isFinite(prices.usd_cny)
+		|| prices.usd_cny <= 0) {
+		return null;
+	}
+	const vatFactor = product === "peanut_meal" ? 1 : 1.09;
+	const price = (
+		prices[product] - customsCostCnyPerTon
+	) / vatFactor / prices.usd_cny;
+	return Number.isFinite(price) && price > 0 ? price : null;
 }
 
 function calculateImportCottonPrice(prices, {
@@ -944,6 +1142,18 @@ async function loadMarketPrices() {
 		)) {
 			value.textContent = Number.isFinite(importCottonPrice)
 				? `US¢ ${derivedFormatter.format(importCottonPrice)}`
+				: App.t("market.unavailable_short");
+		}
+		for (const product of IMPORT_PRODUCT_KEYS) {
+			const value = document.querySelector(
+				`[data-market-derived="import_${product}"]`,
+			);
+			if (!value) continue;
+			const price = result.derived_prices
+				? result.derived_prices[`import_${product}`]
+				: null;
+			value.textContent = Number.isFinite(price) && price > 0
+				? `USD ${derivedFormatter.format(price)}`
 				: App.t("market.unavailable_short");
 		}
 		updated.textContent = App.t("market.updated", {

@@ -173,6 +173,73 @@
 				<p data-i18n="market.import_cotton_formula"></p>
 				<p class="notice" id="market-import-cotton-status" role="status"></p>
 			</section>
+			<section class="derived-panel" id="market-import-product-panel" hidden aria-labelledby="market-import-product-heading">
+				<h2 id="market-import-product-heading" data-i18n="market.import_product_price"></h2>
+				<div class="derived-fields">
+					<div>
+						<label for="market-import-product-customs-cost" data-i18n="market.import_product_customs_cost_label"></label>
+						<input id="market-import-product-customs-cost" type="number" min="0" step="any" value="250" inputmode="decimal" required>
+					</div>
+				</div>
+				<strong class="derived-price" id="market-import-product-price" data-i18n="market.loading"></strong>
+				<p data-i18n="market.import_product_unit"></p>
+				<p id="market-import-product-formula"></p>
+				<p class="notice" id="market-import-product-status" role="status"></p>
+			</section>
+			<section class="derived-panel" id="product-pricing-panel" hidden aria-labelledby="product-pricing-heading">
+				<h2 id="product-pricing-heading"></h2>
+				<p data-i18n="market.product_pricing_intro"></p>
+				<p><span data-i18n="market.product_pricing_vat_label"></span> <strong id="product-pricing-vat-rate"></strong></p>
+				<div class="sudan-fields">
+					<div><label for="product-pricing-benchmark" data-i18n="market.sudan_benchmark_label"></label><input id="product-pricing-benchmark" data-product-pricing-field="domestic_benchmark_cny_per_ton" type="number" readonly></div>
+					<div><label for="product-pricing-quality-discount" data-i18n="market.sudan_quality_discount_label"></label><input id="product-pricing-quality-discount" data-product-pricing-field="quality_discount_cny_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-fx" data-i18n="market.sudan_fx_label"></label><input id="product-pricing-fx" data-product-pricing-field="fx_cny_per_usd" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-duty" data-i18n="market.sudan_duty_label"></label><input id="product-pricing-duty" data-product-pricing-field="duty_percent" type="number" min="0" max="100" step="any"></div>
+					<div><label for="product-pricing-recoverable-vat" data-i18n="market.sudan_recoverable_vat_label"></label><input id="product-pricing-recoverable-vat" data-product-pricing-field="import_vat_recoverable_percent" type="number" min="0" max="100" step="any"></div>
+					<div><label for="product-pricing-other-cost" data-i18n="market.sudan_other_cost_label"></label><input id="product-pricing-other-cost" data-product-pricing-field="other_nonrecoverable_cost_cny_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-other-vat" data-i18n="market.sudan_other_vat_label"></label><input id="product-pricing-other-vat" data-product-pricing-field="other_recoverable_vat_cny_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-target-profit" data-i18n="market.sudan_target_profit_label"></label><input id="product-pricing-target-profit" data-product-pricing-field="target_profit_cny_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-supplier-quote" data-i18n="market.sudan_supplier_quote_label"></label><input id="product-pricing-supplier-quote" data-product-pricing-field="supplier_quote_usd_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-quote-basis" data-i18n="market.sudan_quote_basis_label"></label><select id="product-pricing-quote-basis" data-product-pricing-field="supplier_quote_basis"><option value="CIF" data-i18n="market.sudan_cif_basis"></option><option value="FOB" data-i18n="market.sudan_fob_basis"></option></select></div>
+					<div><label for="product-pricing-freight" data-i18n="market.sudan_freight_label"></label><input id="product-pricing-freight" data-product-pricing-field="ocean_freight_usd_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-insurance" data-i18n="market.sudan_insurance_label"></label><input id="product-pricing-insurance" data-product-pricing-field="insurance_usd_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-other-cif-cost" data-i18n="market.sudan_other_cif_cost_label"></label><input id="product-pricing-other-cif-cost" data-product-pricing-field="other_cif_cost_usd_per_ton" type="number" min="0" step="any"></div>
+					<div><label for="product-pricing-quantity" data-i18n="market.sudan_quantity_label"></label><input id="product-pricing-quantity" data-product-pricing-field="quantity_tons" type="number" min="0" step="any"></div>
+				</div>
+				<p class="notice" id="product-pricing-status" role="status"></p>
+				<div class="sudan-results" id="product-pricing-results" hidden>
+					<div class="sudan-metrics">
+						<div class="sudan-metric"><span data-i18n="market.sudan_max_target_price"></span><strong id="product-sudan-max-target-price"></strong></div>
+						<div class="sudan-metric"><span data-i18n="market.sudan_break-even-price"></span><strong id="product-sudan-break-even-price"></strong></div>
+					</div>
+					<p class="notice" id="product-sudan-pricing-limit-status"></p>
+					<div class="sudan-quote-evaluation" id="product-sudan-quote-evaluation" hidden>
+						<h3 data-i18n="market.sudan_supplier_evaluation"></h3>
+						<p id="product-sudan-quote-cif-price"></p>
+						<p id="product-sudan-quote-profit"></p>
+						<p id="product-sudan-quote-total-profit"></p>
+						<p id="product-sudan-quote-headroom"></p>
+					</div>
+					<div class="sudan-cash-flow">
+						<h3 data-i18n="market.sudan_cash_flow"></h3>
+						<p id="product-sudan-cash-flow-reference"></p>
+						<p id="product-sudan-import-vat-cash"></p>
+						<p id="product-sudan-vat-balance"></p>
+						<p id="product-sudan-funding"></p>
+					</div>
+					<div class="sudan-scenarios">
+						<h3 data-i18n="market.sudan_domestic_scenarios"></h3>
+						<div class="table-wrap" id="product-sudan-domestic-scenarios"></div>
+						<h3 data-i18n="market.sudan_fx_scenarios"></h3>
+						<div class="table-wrap" id="product-sudan-fx-scenarios"></div>
+						<div id="product-sudan-quote-scenarios-panel" hidden>
+							<h3 data-i18n="market.sudan_quote_scenarios"></h3>
+							<div class="table-wrap" id="product-sudan-quote-scenarios"></div>
+						</div>
+					</div>
+					<p data-i18n="market.product_pricing_risks"></p>
+				</div>
+			</section>
 			<section class="derived-panel" id="sudan-cotton-pricing-panel" hidden aria-labelledby="sudan-cotton-pricing-heading">
 				<h2 id="sudan-cotton-pricing-heading" data-i18n="market.sudan_pricing_title"></h2>
 				<p data-i18n="market.sudan_pricing_intro"></p>

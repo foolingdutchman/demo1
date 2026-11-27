@@ -152,6 +152,69 @@ test("non-cotton details do not show the cotton index panel", async () => {
 	assert.equal(panel.hidden, true);
 });
 
+test("same-cost import prices apply VAT by product and honor the customs cost", () => {
+	const context = vm.createContext({
+		document: { addEventListener() {} },
+	});
+	vm.runInContext(appScript, context);
+	const prices = { sesame: 14118, peanut: 7971, peanut_meal: 3150, usd_cny: 6.6911 };
+	const calculate = (product, cost) => vm.runInContext(
+		`calculateSameCostImportPrice(${JSON.stringify(prices)}, "${product}", ${cost})`,
+		context,
+	);
+	const sesamePrice = calculate("sesame", 250);
+	const peanutMealPrice = calculate("peanut_meal", 250);
+	const adjustedPrice = calculate("sesame", 500);
+
+	assert.ok(Math.abs(sesamePrice - (14118 - 250) / 1.09 / 6.6911) < 1e-10);
+	assert.ok(Math.abs(peanutMealPrice - (3150 - 250) / 6.6911) < 1e-10);
+	assert.ok(adjustedPrice < sesamePrice);
+	assert.equal(calculate("peanut", 9000), null);
+});
+
+test("product detail recalculates its import price when customs cost changes", () => {
+	const elements = new Map();
+	const customsCost = {
+		value: "250",
+		get valueAsNumber() { return Number(this.value); },
+		setAttribute() {},
+	};
+	elements.set("market-import-product-customs-cost", customsCost);
+	elements.set("market-import-product-price", { textContent: "" });
+	elements.set("market-import-product-status", { textContent: "" });
+	const context = vm.createContext({
+		document: {
+			documentElement: { lang: "en" },
+			addEventListener() {},
+			getElementById(id) { return elements.get(id); },
+		},
+		Intl,
+		App: { t(key) { return key; } },
+	});
+	vm.runInContext(appScript, context);
+	vm.runInContext(
+		"importProductMarketPrices = { sesame: 14118, usd_cny: 6.6911 }",
+		context,
+	);
+	vm.runInContext("updateImportProductPrice('sesame')", context);
+	const initialPrice = elements.get("market-import-product-price").textContent;
+	customsCost.value = "500";
+	vm.runInContext("updateImportProductPrice('sesame')", context);
+
+	assert.equal(elements.get("market-import-product-status").textContent, "");
+	assert.notEqual(
+		elements.get("market-import-product-price").textContent,
+		initialPrice,
+	);
+	assert.equal(
+		elements.get("market-import-product-price").textContent,
+		`USD ${new Intl.NumberFormat("en", {
+			minimumFractionDigits: 2,
+			maximumFractionDigits: 2,
+		}).format((14118 - 500) / 1.09 / 6.6911)}`,
+	);
+});
+
 test("quotation table displays uploaded dates and leaves missing dates blank", async () => {
 	const translations = JSON.parse(fs.readFileSync(
 		path.join(__dirname, "..", "locales", "messages.json"), "utf8",
